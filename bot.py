@@ -68,11 +68,39 @@ database = create_database(DATABASE_URL or DATABASE_PATH)
 router = Router()
 
 
-def ai_chat_completions_url() -> str:
-    """Return a full OpenAI-compatible chat completions endpoint."""
-    if AI_BASE_URL.endswith("/chat/completions"):
-        return AI_BASE_URL
-    return f"{AI_BASE_URL}/chat/completions"
+def ai_endpoint_url() -> str:
+    """Return the configured AI endpoint.
+
+    GenAPI's OpenAI-compatible gateway accepts chat-completion payloads at
+    https://proxy.gen-api.ru/v1. Some other providers require a full
+    /chat/completions path, so we keep the value fully configurable.
+    """
+    return os.getenv("AI_ENDPOINT", "").strip() or AI_BASE_URL
+
+
+def extract_ai_message_content(data: Any) -> str:
+    """Support OpenAI-compatible and GenAPI native response shapes."""
+    if not isinstance(data, dict):
+        raise RuntimeError("ИИ вернула ответ неизвестного формата")
+
+    choices = data.get("choices")
+    if isinstance(choices, list) and choices:
+        message = choices[0].get("message", {}) if isinstance(choices[0], dict) else {}
+        content = message.get("content") if isinstance(message, dict) else None
+        if content:
+            return str(content).strip()
+
+    output = data.get("output")
+    if isinstance(output, str) and output.strip():
+        return output.strip()
+    if isinstance(output, list) and output:
+        return "\n".join(str(item) for item in output if item).strip()
+
+    response = data.get("response")
+    if isinstance(response, str) and response.strip():
+        return response.strip()
+
+    raise RuntimeError("ИИ вернула ответ без текста сценария")
 
 
 def validate_init_data(init_data: str) -> dict[str, Any] | None:
@@ -251,21 +279,19 @@ async def generate_ai_script(topic: str, duration: str, tone: str) -> list[dict[
 
     try:
         async with ClientSession(timeout=timeout) as session:
-            async with session.post(ai_chat_completions_url(), headers=headers, json=payload) as response:
+            async with session.post(ai_endpoint_url(), headers=headers, json=payload) as response:
                 response_text = await response.text()
                 if response.status >= 400:
                     logging.error("AI API returned %s: %s", response.status, response_text[:500])
                     raise RuntimeError(f"GenAPI вернул ошибку {response.status}")
                 data = json.loads(response_text)
+    except RuntimeError:
+        raise
     except (ClientError, TimeoutError, json.JSONDecodeError) as error:
         logging.error("AI generation failed: %s", error)
         raise RuntimeError("ИИ сейчас не ответила. Проверьте AI_API_KEY, AI_BASE_URL и AI_MODEL в Render.") from error
 
-    message = data.get("choices", [{}])[0].get("message", {})
-    answer = str(message.get("content") or "").strip()
-    if not answer:
-        logging.error("AI response did not contain message content")
-        raise RuntimeError("ИИ вернула пустой ответ")
+    answer = extract_ai_message_content(data)
 
     try:
         parsed = extract_json_from_ai_answer(answer)
@@ -420,7 +446,7 @@ async def health(_: web.Request) -> web.Response:
             "ai_enabled": bool(AI_API_KEY),
             "ai_model": AI_MODEL,
             "ai_base_url": AI_BASE_URL,
-            "ai_endpoint": ai_chat_completions_url(),
+            "ai_endpoint": ai_endpoint_url(),
         }
     )
 

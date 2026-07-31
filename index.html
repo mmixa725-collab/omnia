@@ -483,7 +483,13 @@
             // Заголовок действует только при DEVELOPMENT_MODE=true на сервере.
             if (!telegram?.initData) headers["X-Development-User-Id"] = "100001";
             const response = await fetch(path, { ...options, headers });
-            const data = await response.json().catch(() => ({ error: "Сервер вернул неизвестный ответ" }));
+            const rawText = await response.text();
+            let data;
+            try {
+                data = rawText ? JSON.parse(rawText) : {};
+            } catch {
+                data = { error: `Сервер вернул не JSON: ${rawText.slice(0, 120) || response.status}` };
+            }
             if (!response.ok) {
                 const error = new Error(data.error || "Не удалось выполнить запрос");
                 error.status = response.status;
