@@ -8,6 +8,7 @@ import hmac
 import json
 import logging
 import os
+import re
 import secrets
 import time
 from pathlib import Path
@@ -361,11 +362,7 @@ def video_scene_count(duration: str, duration_minutes: int | None) -> int:
     return max(3, min(12, (minutes + 4) // 5 + 2))
 
 
-def exact_video_timings(
-    duration: str,
-    scene_count: int,
-    duration_minutes: int | None,
-) -> list[str]:
+def exact_video_timings(duration: str, scene_count: int, duration_minutes: int | None) -> list[str]:
     if duration == "short":
         return ["00:00–00:04", "00:04–00:43", "00:43–01:00"]
     total_seconds = max(1, min(60, duration_minutes or 10)) * 60
@@ -376,31 +373,76 @@ def exact_video_timings(
     ]
 
 
-def normalize_ai_scene(
-    scene: dict[str, Any],
-    index: int,
+def text_word_count(text: str) -> int:
+    """Посчитать произносимые слова в русском или английском тексте."""
+    return len(re.findall(r"[A-Za-zА-Яа-яЁё0-9]+(?:[-’'][A-Za-zА-Яа-яЁё0-9]+)*", text))
+
+
+def realistic_video_timings(
+    scenes: list[dict[str, Any]],
     duration: str,
     duration_minutes: int | None,
-    scene_count: int,
-) -> dict[str, str]:
-    """Привести ответ модели к формату фронтенда и зафиксировать тайминг."""
-    timings = exact_video_timings(duration, scene_count, duration_minutes)
-    fallback_titles = ["Хук", "Развитие", "Финал"]
-    fallback_title = (
-        fallback_titles[index]
-        if scene_count == 3 and index < len(fallback_titles)
-        else f"Смысловой блок {index + 1}"
-    )
-    generated_timing = str(scene.get("timing") or timings[index]).strip()[:40]
+    language: str,
+) -> list[str]:
+    """Рассчитать тайминг по объёму речи и реальным паузам/B-roll.
 
-    return {
-        "title": str(scene.get("title") or fallback_title).strip()[:80],
-        "timing": timings[index] if duration == "long" else generated_timing,
-        "frame": str(scene.get("frame") or "").strip(),
-        "speaker": str(scene.get("speaker") or "").strip(),
-        "light": str(scene.get("light") or "").strip(),
-        "sound": str(scene.get("sound") or "").strip(),
-    }
+    Небольшое отклонение от целевой длины мягко компенсируется паузами. Если
+    модель написала слишком мало текста, интерфейс честно покажет более
+    короткий хронометраж и не растянет одну минуту речи на несколько минут.
+    """
+    if duration == "short":
+        return exact_video_timings(duration, len(scenes), duration_minutes)
+
+    words_per_minute = 145 if language == "en" else 125
+    durations: list[int] = []
+    for scene in scenes:
+        speech_seconds = max(4, round(text_word_count(str(scene.get("speaker", ""))) * 60 / words_per_minute))
+        try:
+            visual_seconds = int(scene.get("visual_seconds", 0))
+        except (TypeError, ValueError):
+            visual_seconds = 0
+        # Паузы и перебивки не могут маскировать слишком короткий текст.
+        visual_seconds = max(2, min(visual_seconds, max(12, speech_seconds // 3)))
+        durations.append(speech_seconds + visual_seconds)
+
+    target_seconds = max(1, min(60, duration_minutes or 10)) * 60
+    natural_seconds = sum(durations)
+    if natural_seconds and target_seconds * 0.85 <= natural_seconds <= target_seconds * 1.08:
+        factor = target_seconds / natural_seconds
+        durations = [max(1, round(value * factor)) for value in durations]
+        durations[-1] += target_seconds - sum(durations)
+
+    timings: list[str] = []
+    cursor = 0
+    for seconds in durations:
+        end = cursor + max(1, seconds)
+        timings.append(f"{format_video_time(cursor)}–{format_video_time(end)}")
+        cursor = end
+    return timings
+
+
+def normalize_ai_scenes(
+    raw_scenes: list[dict[str, Any]],
+    duration: str,
+    duration_minutes: int | None,
+    language: str,
+) -> list[dict[str, str]]:
+    timings = realistic_video_timings(raw_scenes, duration, duration_minutes, language)
+    fallback_titles = ["Hook", "Development", "Finale"] if language == "en" else ["Хук", "Развитие", "Финал"]
+    scenes: list[dict[str, str]] = []
+    for index, scene in enumerate(raw_scenes):
+        fallback = fallback_titles[index] if len(raw_scenes) == 3 else (f"Scene {index + 1}" if language == "en" else f"Смысловой блок {index + 1}")
+        scenes.append(
+            {
+                "title": str(scene.get("title") or fallback).strip()[:80],
+                "timing": timings[index],
+                "frame": str(scene.get("frame") or "").strip(),
+                "speaker": str(scene.get("speaker") or "").strip(),
+                "light": str(scene.get("light") or "").strip(),
+                "sound": str(scene.get("sound") or "").strip(),
+            }
+        )
+    return scenes
 
 
 def extract_json_from_ai_answer(text: str) -> Any:
@@ -435,55 +477,72 @@ async def generate_ai_script(
     duration: str,
     tone: str,
     duration_minutes: int | None = None,
+    language: str = "ru",
     options: dict[str, str] | None = None,
     existing_content: list[dict[str, str]] | None = None,
     revision_instruction: str = "",
 ) -> list[dict[str, str]]:
     """Сгенерировать сценарий через GenAPI/OpenAI-compatible endpoint."""
     if not AI_API_KEY:
-        return make_script(topic, duration, tone, duration_minutes)
+        return make_script(topic, duration, tone, duration_minutes, language)
 
+    language = "en" if language == "en" else "ru"
     exact_minutes = max(1, min(60, duration_minutes or 10))
     scene_count = video_scene_count(duration, exact_minutes)
-    duration_label = (
-        "Shorts/Reels ровно на 60 секунд"
-        if duration == "short"
-        else f"YouTube-видео ровно на {exact_minutes} минут"
-    )
-    tone_label = {
-        "hype": "динамичный хайп, быстро, энергично, без воды",
-        "emotional": "эмоциональный, искренний, мотивирующий",
-        "educational": "обучающий, практичный, пошаговый",
-    }[tone]
-    options = options or {}
-    option_labels = {
-        "platform": "Площадка",
-        "audience": "Целевая аудитория",
-        "goal": "Цель видео",
-        "format": "Формат съёмки",
-        "cta": "Призыв к действию",
+    target_words = (135 if language == "en" else 115) if duration == "short" else (120 if language == "en" else 95) * exact_minutes
+    target_visual_seconds = 6 if duration == "short" else 12 * exact_minutes
+    duration_label = "Shorts/Reels exactly 60 seconds" if language == "en" and duration == "short" else f"YouTube video exactly {exact_minutes} minutes" if language == "en" else "Shorts/Reels ровно на 60 секунд" if duration == "short" else f"YouTube-видео ровно на {exact_minutes} минут"
+    tone_labels = {
+        "ru": {"hype": "динамичный хайп, быстро, энергично, без воды", "emotional": "эмоциональный, искренний, мотивирующий", "educational": "обучающий, практичный, пошаговый"},
+        "en": {"hype": "dynamic and energetic, fast-paced, no filler", "emotional": "emotional, sincere and motivating", "educational": "educational, practical and step-by-step"},
     }
+    tone_label = tone_labels[language][tone]
+    options = options or {}
+    option_labels = ({"platform": "Platform", "audience": "Target audience", "goal": "Video goal", "format": "Shooting format", "cta": "Call to action"} if language == "en" else {"platform": "Площадка", "audience": "Целевая аудитория", "goal": "Цель видео", "format": "Формат съёмки", "cta": "Призыв к действию"})
     brief_lines = [
         f"{option_labels[key]}: {value}"
         for key, value in options.items()
         if key in option_labels and value
     ]
-    brief = "\n".join(brief_lines) or "Дополнительных пожеланий нет"
+    brief = "\n".join(brief_lines) or ("No additional preferences" if language == "en" else "Дополнительных пожеланий нет")
     revision_context = ""
     if existing_content and revision_instruction:
-        revision_context = (
-            "\n\nЭто улучшение уже существующего сценария.\n"
-            f"Текущий сценарий: {json.dumps(existing_content, ensure_ascii=False)}\n"
-            f"Задача улучшения: {revision_instruction}\n"
-            "Сохрани удачные детали и структуру остальных блоков."
-        )
+        revision_context = (f"\n\nImprove this existing script.\nCurrent script: {json.dumps(existing_content, ensure_ascii=False)}\nRevision task: {revision_instruction}\nKeep the successful details and the structure of unaffected scenes." if language == "en" else f"\n\nЭто улучшение уже существующего сценария.\nТекущий сценарий: {json.dumps(existing_content, ensure_ascii=False)}\nЗадача улучшения: {revision_instruction}\nСохрани удачные детали и структуру остальных блоков.")
 
-    system_prompt = (
-        "Ты сильный русскоязычный сценарист коротких видео и режиссер монтажа. "
-        "Пиши конкретно, применимо и без общих фраз. "
-        "Не объясняй формат, верни только валидный JSON."
-    )
-    user_prompt = f"""
+    if language == "en":
+        system_prompt = "You are an expert English-language video scriptwriter and editing director. Be concrete, useful and natural. Return only valid JSON with no explanation."
+        user_prompt = f"""
+Create a script about: {topic}
+Format: {duration_label}
+Tone: {tone_label}
+Brief:
+{brief}
+{revision_context}
+
+Important:
+- Write the entire result in English, including titles and production directions.
+- Avoid generic filler. Give real actions, examples, mistakes and visual ideas.
+- The speaker text must sound natural when spoken aloud.
+- Return exactly a JSON array with {scene_count} scenes.
+- For this duration write about {target_words} spoken words total (within 8%). This is mandatory; do not replace speech with a short summary.
+- Distribute approximately {target_visual_seconds} seconds of pauses, demonstrations and B-roll across the scenes.
+- Include integer `visual_seconds` in each scene for time with no spoken words.
+- Timings must cover the narrative continuously, but the server will verify them from the actual word count.
+
+Scene schema:
+{{
+  "title": "scene title",
+  "timing": "proposed timing",
+  "frame": "what happens on screen",
+  "speaker": "the complete verbatim text to be spoken, not an outline",
+  "light": "lighting atmosphere",
+  "sound": "music and sound design",
+  "visual_seconds": 10
+}}
+""".strip()
+    else:
+        system_prompt = "Ты сильный русскоязычный сценарист видео и режиссёр монтажа. Пиши конкретно, применимо и естественно. Не объясняй формат, верни только валидный JSON."
+        user_prompt = f"""
 Сделай сценарий для темы: {topic}
 Формат: {duration_label}
 Тональность: {tone_label}
@@ -496,18 +555,20 @@ async def generate_ai_script(
 - Дай реальные действия, упражнения, ошибки, примеры и визуальные кадры.
 - Текст спикера должен звучать как живой человек из Reels/TikTok.
 - Верни ровно JSON-массив из {scene_count} смысловых блоков.
-- Тайминг должен непрерывно покрывать всю заданную длительность без пропусков.
-- Для YouTube рассчитывай объём речи примерно по 70-90 слов в минуту: учитывай паузы, демонстрации и B-roll.
-- Последний блок обязан заканчиваться точно на отметке {"01:00" if duration == "short" else format_video_time(exact_minutes * 60)}.
+- Для этой длительности напиши около {target_words} произносимых слов суммарно (допуск 8%). Это обязательное условие: нужен полный текст, а не краткий конспект.
+- Распредели примерно {target_visual_seconds} секунд пауз, демонстраций и B-roll между блоками.
+- В каждом блоке укажи целое поле `visual_seconds` — время без речи.
+- Тайминг должен быть непрерывным, но сервер перепроверит его по фактическому количеству слов.
 
 Схема каждого блока:
 {{
   "title": "название блока",
   "timing": "тайминг",
   "frame": "что происходит в кадре",
-  "speaker": "что говорить спикеру",
+  "speaker": "полный дословный текст спикера, а не тезисы",
   "light": "световая атмосфера",
-  "sound": "звуки и эффекты"
+  "sound": "звуки и эффекты",
+  "visual_seconds": 10
 }}
 """.strip()
 
@@ -588,16 +649,7 @@ async def generate_ai_script(
         raise RuntimeError("ИИ вернула неправильную структуру сценария")
 
     available_count = min(scene_count, len(parsed))
-    scenes = [
-        normalize_ai_scene(
-            scene,
-            index,
-            duration,
-            exact_minutes,
-            available_count,
-        )
-        for index, scene in enumerate(parsed[:available_count])
-    ]
+    scenes = normalize_ai_scenes(parsed[:available_count], duration, exact_minutes, language)
     if any(not scene["speaker"] or not scene["frame"] for scene in scenes):
         logging.error("AI response has empty required scene fields")
         raise RuntimeError("ИИ вернула неполный сценарий")
@@ -609,6 +661,7 @@ def make_script(
     duration: str,
     tone: str,
     duration_minutes: int | None = None,
+    language: str = "ru",
 ) -> list[dict[str, str]]:
     """Сформировать готовый структурированный сценарий без внешнего API."""
     is_short = duration == "short"
@@ -620,13 +673,22 @@ def make_script(
         exact_minutes,
     )
 
+    if language == "en":
+        tone_copy = {"hype": "speak quickly and confidently, building energy", "emotional": "speak sincerely with personal emotion and short pauses", "educational": "explain clearly, precisely and step by step"}[tone]
+        scenes = [
+            {"title": "Instant hook", "timing": opening_timing, "frame": f"Macro shot of a concrete detail connected to “{topic}”, then a sharp cut to the presenter.", "speaker": f"If you think you already know everything about {topic}, give me {duration_label}. The most important part is usually overlooked.", "light": "Blue neon rim light, face in partial shadow, soft warm fill from the right.", "sound": "Short cinematic hit followed by a pulsing bass and a clean whoosh."},
+            {"title": "Value and development", "timing": body_timing, "frame": "Alternate medium shots, practical details and concise on-screen points.", "speaker": f"Let us break down {topic} into concrete actions. Set one measurable goal, practise it consistently, record the result and review what actually changed. We {tone_copy}. Show the viewer a real before-and-after result instead of a vague promise.", "light": "Soft key light at 45 degrees with a blue-violet background gradient.", "sound": "Rhythmic electronic underscore with subtle clicks between key points."},
+            {"title": "Finale and action", "timing": finale_timing, "frame": "The camera slowly moves closer while one clear call to action appears.", "speaker": f"The main idea is simple: {topic} becomes achievable when you turn it into the next concrete action. Save this script and take that action today.", "light": "The neon becomes softer and warmer while the background fades to deep black.", "sound": "The music resolves into a bright chord and a clean final impact."},
+        ]
+        return normalize_ai_scenes(scenes, duration, exact_minutes, language) if not is_short else scenes
+
     tone_copy = {
         "hype": "говорим быстро, уверенно и с нарастающей энергией",
         "emotional": "говорим искренне, через личное переживание и короткие паузы",
         "educational": "объясняем просто, точно и по шагам",
     }[tone]
 
-    return [
+    scenes = [
         {
             "title": "Мгновенный хук",
             "timing": opening_timing,
@@ -652,6 +714,7 @@ def make_script(
             "sound": "Музыка раскрывается светлым аккордом, короткий reverse-переход и чистый финальный удар под призыв.",
         },
     ]
+    return normalize_ai_scenes(scenes, duration, exact_minutes, language) if not is_short else scenes
 
 
 async def api_profile(request: web.Request) -> web.Response:
@@ -748,6 +811,14 @@ async def api_refine_scenario(request: web.Request) -> web.Response:
     }
     if action not in instructions:
         return web.json_response({"error": "Неизвестное действие улучшения"}, status=400)
+    scenario_language = "en" if scenario.get("language") == "en" else "ru"
+    if scenario_language == "en":
+        instructions = {
+            "stronger_hook": "Rewrite only the first scene with a more specific, surprising and powerful hook. Keep the other scenes almost unchanged.",
+            "shorter": "Shorten the speaker text in every scene by about 30 percent while preserving meaning, facts and natural rhythm.",
+            "new_finale": "Rewrite only the final scene with a stronger conclusion and a specific, natural call to action.",
+            "change_tone": "Rewrite the speaker text in the selected tone while preserving facts, realistic timing and visual logic.",
+        }
 
     try:
         content = await generate_ai_script(
@@ -755,6 +826,7 @@ async def api_refine_scenario(request: web.Request) -> web.Response:
             scenario["duration"],
             requested_tone,
             duration_minutes=scenario.get("duration_minutes"),
+            language=scenario_language,
             existing_content=scenario["content"],
             revision_instruction=instructions[action],
         )
@@ -780,6 +852,7 @@ async def api_generate(request: web.Request) -> web.Response:
     topic = str(body.get("topic", "")).strip()
     duration = str(body.get("duration", ""))
     tone = str(body.get("tone", ""))
+    language = "en" if str(body.get("language", "ru")).lower() == "en" else "ru"
     try:
         duration_minutes = int(body.get("duration_minutes", 10))
     except (TypeError, ValueError):
@@ -826,6 +899,7 @@ async def api_generate(request: web.Request) -> web.Response:
             duration,
             tone,
             duration_minutes=duration_minutes,
+            language=language,
             options=options,
         )
     except RuntimeError as error:
@@ -838,6 +912,7 @@ async def api_generate(request: web.Request) -> web.Response:
         tone,
         content,
         duration_minutes,
+        language,
     )
     return web.json_response(
         {
@@ -846,6 +921,7 @@ async def api_generate(request: web.Request) -> web.Response:
                 "topic": topic,
                 "duration": duration,
                 "duration_minutes": duration_minutes,
+                "language": language,
                 "tone": tone,
                 "content": content,
                 "is_favorite": False,
@@ -1064,6 +1140,7 @@ async def run() -> None:
         [
             web.get("/", index_page),
             web.static("/assets", BASE_DIR / "assets"),
+            web.static("/icons", BASE_DIR / "icons"),
             web.get("/health", health),
             web.get("/api/profile", api_profile),
             web.get("/api/scenarios", api_scenarios),
