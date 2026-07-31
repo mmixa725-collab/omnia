@@ -53,6 +53,13 @@ AI_API_KEY = os.getenv("AI_API_KEY", "").strip()
 AI_BASE_URL = os.getenv("AI_BASE_URL", "https://proxy.gen-api.ru/v1").strip().rstrip("/")
 AI_MODEL = os.getenv("AI_MODEL", "deepseek-v4-flash").strip()
 AI_TIMEOUT_SECONDS = float(os.getenv("AI_TIMEOUT_SECONDS", "55"))
+MANUAL_PREMIUM_USER_IDS = {
+    *{
+        int(value)
+        for value in os.getenv("MANUAL_PREMIUM_USER_IDS", "").replace(";", ",").split(",")
+        if value.strip().isdigit()
+    },
+}
 
 PRICE_STARS = 300
 PAYLOAD_PREFIX = "omnia-premium"
@@ -129,6 +136,21 @@ async def authentication_middleware(
 
 def current_user(request: web.Request) -> dict[str, Any]:
     return request["telegram_user"]
+
+
+def ensure_premium_access(user_id: int, username: str | None) -> dict[str, Any]:
+    """Create/update a user and apply manual Premium grants configured by owner."""
+    profile = database.ensure_user(user_id, username)
+    if user_id in MANUAL_PREMIUM_USER_IDS and not profile["is_premium"]:
+        database.activate_premium(
+            user_id=user_id,
+            payment_charge_id=f"manual-premium-{user_id}",
+            invoice_payload="manual-premium-grant",
+            amount=0,
+            currency="MANUAL",
+        )
+        profile = database.get_user(user_id) or profile
+    return profile
 
 
 def normalize_ai_scene(scene: dict[str, Any], index: int, duration: str) -> dict[str, str]:
@@ -300,7 +322,7 @@ def make_script(topic: str, duration: str, tone: str) -> list[dict[str, str]]:
 async def api_profile(request: web.Request) -> web.Response:
     user = current_user(request)
     profile = await asyncio.to_thread(
-        database.ensure_user,
+        ensure_premium_access,
         user["id"],
         user.get("username") or user.get("first_name"),
     )
@@ -335,7 +357,7 @@ async def api_generate(request: web.Request) -> web.Response:
         return web.json_response({"error": "Проверьте параметры сценария"}, status=400)
 
     await asyncio.to_thread(
-        database.ensure_user,
+        ensure_premium_access,
         user["id"],
         user.get("username") or user.get("first_name"),
     )
@@ -361,7 +383,7 @@ async def api_generate(request: web.Request) -> web.Response:
 async def api_invoice(request: web.Request) -> web.Response:
     user = current_user(request)
     profile = await asyncio.to_thread(
-        database.ensure_user,
+        ensure_premium_access,
         user["id"],
         user.get("username") or user.get("first_name"),
     )
@@ -418,7 +440,7 @@ async def start_handler(message: Message) -> None:
     if message.from_user is None:
         return
     await asyncio.to_thread(
-        database.ensure_user, message.from_user.id, message.from_user.username
+        ensure_premium_access, message.from_user.id, message.from_user.username
     )
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
