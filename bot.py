@@ -823,7 +823,7 @@ async def start_handler(message: Message) -> None:
     keyboard_rows = [
         [
             InlineKeyboardButton(
-                text="Открыть AI-студию ✦",
+                text="Открыть AI-студию",
                 web_app=WebAppInfo(url=APP_URL),
             )
         ]
@@ -831,7 +831,7 @@ async def start_handler(message: Message) -> None:
     keyboard_rows.append(
         [
             InlineKeyboardButton(
-                text=f"Купить Premium — {PRICE_STARS} ⭐",
+                text=f"Купить Premium — {PRICE_STARS} Stars",
                 callback_data="buy_premium",
             )
         ]
@@ -839,17 +839,17 @@ async def start_handler(message: Message) -> None:
 
     caption = (
         "<blockquote>"
-        "<b>Добро пожаловать в omnia ✦</b>\n\n"
+        "<b>Добро пожаловать в omnia</b>\n\n"
         "Ваша персональная AI-студия для создания видео, которые хочется досмотреть.\n\n"
         "<b>Что умеет omnia</b>\n"
-        "✦ превращает идею в готовый сценарий\n"
-        "◷ расписывает тайминг и действия в кадре\n"
-        "◉ пишет естественный текст для спикера\n"
-        "☼ подбирает свет и атмосферу\n"
-        "♫ добавляет музыку и звуковые эффекты\n"
-        "▤ сохраняет сценарии в вашей истории\n\n"
+        "• превращает идею в готовый сценарий\n"
+        "• расписывает тайминг и действия в кадре\n"
+        "• пишет естественный текст для спикера\n"
+        "• подбирает свет и атмосферу\n"
+        "• добавляет музыку и звуковые эффекты\n"
+        "• сохраняет сценарии в вашей истории\n\n"
         "<b>Первые 3 генерации — бесплатно.</b>\n"
-        f"Premium без лимитов — всего {PRICE_STARS} ⭐"
+        f"Premium без лимитов — всего {PRICE_STARS} Stars"
         "</blockquote>"
     )
     await message.answer_photo(
@@ -869,7 +869,7 @@ async def buy_premium_callback(callback: CallbackQuery) -> None:
         callback.from_user.username,
     )
     if profile["is_premium"]:
-        await callback.answer("Premium уже активирован ✦", show_alert=True)
+        await callback.answer("Premium уже активирован", show_alert=True)
         return
     if callback.message is None:
         await callback.answer()
@@ -933,7 +933,7 @@ async def successful_payment_handler(message: Message) -> None:
         payment.currency,
     )
     await message.answer(
-        "Оплата прошла успешно ✦\n\nPremium активирован. Теперь генерации доступны без ограничений."
+        "Оплата прошла успешно.\n\nPremium активирован. Теперь генерации доступны без ограничений."
     )
 
 
