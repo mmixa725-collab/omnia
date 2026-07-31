@@ -668,17 +668,11 @@ async def start_handler(message: Message) -> None:
     if message.from_user is None:
         return
 
-    profile = await asyncio.to_thread(
+    await asyncio.to_thread(
         ensure_premium_access,
         message.from_user.id,
         message.from_user.username,
     )
-    premium_button = [] if profile["is_premium"] else [
-        InlineKeyboardButton(
-            text=f"Купить Premium — {PRICE_STARS} ⭐",
-            callback_data="buy_premium",
-        )
-    ]
     keyboard_rows = [
         [
             InlineKeyboardButton(
@@ -687,20 +681,29 @@ async def start_handler(message: Message) -> None:
             )
         ]
     ]
-    if premium_button:
-        keyboard_rows.append(premium_button)
+    keyboard_rows.append(
+        [
+            InlineKeyboardButton(
+                text=f"Купить Premium — {PRICE_STARS} ⭐",
+                callback_data="buy_premium",
+            )
+        ]
+    )
 
     caption = (
+        "<blockquote>"
         "<b>Добро пожаловать в omnia ✦</b>\n\n"
         "Ваша персональная AI-студия для создания видео, которые хочется досмотреть.\n\n"
-        "<b>Что умеет omnia:</b>\n"
-        "• превращает любую идею в готовый сценарий;\n"
-        "• расписывает тайминг и действия в кадре;\n"
-        "• пишет естественный текст для спикера;\n"
-        "• подбирает свет, музыку и звуковые эффекты;\n"
-        "• сохраняет все сценарии в вашей истории.\n\n"
+        "<b>Что умеет omnia</b>\n"
+        "✦ превращает идею в готовый сценарий\n"
+        "◷ расписывает тайминг и действия в кадре\n"
+        "◉ пишет естественный текст для спикера\n"
+        "☼ подбирает свет и атмосферу\n"
+        "♫ добавляет музыку и звуковые эффекты\n"
+        "▤ сохраняет сценарии в вашей истории\n\n"
         "<b>Первые 3 генерации — бесплатно.</b>\n"
-        f"Premium без лимитов — {PRICE_STARS} Telegram Stars."
+        f"Premium без лимитов — всего {PRICE_STARS} ⭐"
+        "</blockquote>"
     )
     await message.answer_photo(
         photo=FSInputFile(BASE_DIR / "assets" / "welcome-poster.png"),
