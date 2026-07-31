@@ -115,12 +115,57 @@ def extract_ai_message_content(data: Any) -> str:
         return output.strip()
     if isinstance(output, list) and output:
         return "\n".join(str(item) for item in output if item).strip()
+    if isinstance(output, dict):
+        output_text = extract_text_from_nested_result(output)
+        if output_text:
+            return output_text
 
     response = data.get("response")
     if isinstance(response, str) and response.strip():
         return response.strip()
+    if isinstance(response, dict):
+        response_text = extract_text_from_nested_result(response)
+        if response_text:
+            return response_text
+
+    result = data.get("result")
+    if isinstance(result, str) and result.strip():
+        return result.strip()
+    if isinstance(result, (dict, list)):
+        result_text = extract_text_from_nested_result(result)
+        if result_text:
+            return result_text
+
+    text = data.get("text")
+    if isinstance(text, str) and text.strip():
+        return text.strip()
+    if isinstance(text, list) and text:
+        return "\n".join(str(item) for item in text if item).strip()
 
     raise RuntimeError("ИИ вернула ответ без текста сценария")
+
+
+def extract_text_from_nested_result(value: Any) -> str:
+    """Find generated text inside GenAPI's nested task response."""
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, list):
+        parts = [extract_text_from_nested_result(item) for item in value]
+        return "\n".join(part for part in parts if part).strip()
+    if not isinstance(value, dict):
+        return ""
+
+    for key in ("content", "text", "message", "answer", "response", "result", "output"):
+        nested = value.get(key)
+        text = extract_text_from_nested_result(nested)
+        if text:
+            return text
+
+    choices = value.get("choices")
+    if isinstance(choices, list) and choices:
+        return extract_text_from_nested_result(choices[0])
+
+    return ""
 
 
 def validate_init_data(init_data: str) -> dict[str, Any] | None:
