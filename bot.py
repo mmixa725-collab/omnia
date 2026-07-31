@@ -142,6 +142,15 @@ def extract_ai_message_content(data: Any) -> str:
     if isinstance(text, list) and text:
         return "\n".join(str(item) for item in text if item).strip()
 
+    # В синхронных ответах GenAPI итог языковой модели часто находится здесь,
+    # а поле result при этом остаётся пустым массивом.
+    for key in ("full_response", "data", "payload"):
+        nested_text = extract_text_from_nested_result(data.get(key))
+        if nested_text:
+            return nested_text
+
+    logging.error("AI response contains no text. Shape: %s", describe_response_shape(data))
+
     raise RuntimeError("ИИ вернула ответ без текста сценария")
 
 
@@ -155,7 +164,20 @@ def extract_text_from_nested_result(value: Any) -> str:
     if not isinstance(value, dict):
         return ""
 
-    for key in ("content", "text", "message", "answer", "response", "result", "output"):
+    for key in (
+        "content",
+        "text",
+        "message",
+        "answer",
+        "response",
+        "result",
+        "output",
+        "full_response",
+        "data",
+        "payload",
+        "completion",
+        "generated_text",
+    ):
         nested = value.get(key)
         text = extract_text_from_nested_result(nested)
         if text:
@@ -166,6 +188,22 @@ def extract_text_from_nested_result(value: Any) -> str:
         return extract_text_from_nested_result(choices[0])
 
     return ""
+
+
+def describe_response_shape(value: Any, depth: int = 0) -> Any:
+    """Описать структуру ответа для Render Logs, не записывая текст пользователя."""
+    if depth >= 4:
+        return type(value).__name__
+    if isinstance(value, dict):
+        return {
+            str(key): describe_response_shape(nested, depth + 1)
+            for key, nested in list(value.items())[:20]
+        }
+    if isinstance(value, list):
+        return [describe_response_shape(item, depth + 1) for item in value[:3]]
+    if isinstance(value, str):
+        return f"str({len(value)})"
+    return type(value).__name__
 
 
 def validate_init_data(init_data: str) -> dict[str, Any] | None:
@@ -278,13 +316,23 @@ def extract_json_from_ai_answer(text: str) -> Any:
         cleaned = cleaned.removesuffix("```").strip()
 
     try:
-        return json.loads(cleaned)
+        parsed = json.loads(cleaned)
     except json.JSONDecodeError:
         start = cleaned.find("[")
         end = cleaned.rfind("]")
         if start != -1 and end != -1 and end > start:
-            return json.loads(cleaned[start : end + 1])
-        raise
+            parsed = json.loads(cleaned[start : end + 1])
+        else:
+            raise
+
+    # Некоторые модели оборачивают массив в объект, даже если попросить
+    # вернуть только JSON-массив.
+    if isinstance(parsed, dict):
+        for key in ("scenes", "script", "scenario", "blocks", "items"):
+            candidate = parsed.get(key)
+            if isinstance(candidate, list):
+                return candidate
+    return parsed
 
 
 async def generate_ai_script(topic: str, duration: str, tone: str) -> list[dict[str, str]]:
