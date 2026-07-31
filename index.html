@@ -1,0 +1,703 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+    <meta name="theme-color" content="#09090b">
+    <title>omnia — генератор сценариев</title>
+
+    <!-- Официальный SDK Telegram Mini Apps. -->
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <!-- Tailwind оставлен через CDN, чтобы проект запускался без сборки фронтенда. -->
+    <script src="https://cdn.tailwindcss.com"></script>
+
+    <style>
+        :root {
+            color-scheme: dark;
+            --background: #09090b;
+            --surface: rgba(255, 255, 255, 0.055);
+            --surface-strong: rgba(255, 255, 255, 0.09);
+            --border: rgba(255, 255, 255, 0.11);
+            --text: #ffffff;
+            --muted: #8e8e93;
+            --blue: #0a84ff;
+            --violet: #8b5cf6;
+            --danger: #ff453a;
+            --safe-top: max(18px, env(safe-area-inset-top));
+            --safe-bottom: max(18px, env(safe-area-inset-bottom));
+        }
+
+        * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+
+        html, body {
+            margin: 0;
+            min-height: 100%;
+            background: var(--background);
+            color: var(--text);
+            font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", sans-serif;
+        }
+
+        body {
+            overflow-x: hidden;
+            background:
+                radial-gradient(circle at 86% -5%, rgba(100, 63, 255, 0.23), transparent 31rem),
+                radial-gradient(circle at -10% 34%, rgba(10, 132, 255, 0.12), transparent 26rem),
+                #09090b;
+        }
+
+        button, input { font: inherit; }
+        button { color: inherit; }
+
+        .app-shell {
+            width: min(100%, 640px);
+            min-height: 100dvh;
+            margin: 0 auto;
+            padding: var(--safe-top) 20px calc(118px + var(--safe-bottom));
+        }
+
+        .topbar {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin: 4px 0 30px;
+        }
+
+        .brand { display: flex; align-items: center; gap: 10px; }
+        .brand-mark {
+            display: grid;
+            width: 34px;
+            height: 34px;
+            place-items: center;
+            border: 1px solid rgba(255,255,255,.17);
+            border-radius: 11px;
+            background: linear-gradient(145deg, rgba(255,255,255,.16), rgba(255,255,255,.04));
+            box-shadow: inset 0 1px 0 rgba(255,255,255,.13), 0 10px 35px rgba(100,63,255,.18);
+            font-size: 20px;
+        }
+        .brand-name { font-weight: 680; letter-spacing: -.03em; font-size: 19px; }
+
+        .credit-pill {
+            display: flex;
+            align-items: center;
+            gap: 7px;
+            min-height: 34px;
+            padding: 7px 11px;
+            border: 1px solid var(--border);
+            border-radius: 999px;
+            background: rgba(255,255,255,.06);
+            color: #d1d1d6;
+            font-size: 12px;
+            font-weight: 600;
+        }
+        .credit-dot {
+            width: 7px;
+            height: 7px;
+            border-radius: 50%;
+            background: #34c759;
+            box-shadow: 0 0 10px rgba(52,199,89,.7);
+        }
+
+        .view { display: none; animation: enter .36s cubic-bezier(.2,.8,.2,1); }
+        .view.active { display: block; }
+        @keyframes enter { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+
+        .eyebrow {
+            margin: 0 0 10px;
+            color: #a78bfa;
+            font-size: 12px;
+            font-weight: 700;
+            letter-spacing: .13em;
+            text-transform: uppercase;
+        }
+        h1 {
+            max-width: 500px;
+            margin: 0;
+            font-size: clamp(35px, 9vw, 54px);
+            line-height: .98;
+            letter-spacing: -.055em;
+            font-weight: 720;
+        }
+        .lead {
+            margin: 16px 0 28px;
+            color: var(--muted);
+            font-size: 16px;
+            line-height: 1.5;
+            letter-spacing: -.01em;
+        }
+
+        .glass-card {
+            border: 1px solid var(--border);
+            border-radius: 20px;
+            background: linear-gradient(155deg, rgba(255,255,255,.075), rgba(255,255,255,.035));
+            box-shadow: inset 0 1px 0 rgba(255,255,255,.045), 0 24px 70px rgba(0,0,0,.22);
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+        }
+        .form-card { padding: 18px; }
+        .label {
+            display: block;
+            margin: 0 0 9px 2px;
+            color: #d1d1d6;
+            font-size: 13px;
+            font-weight: 600;
+        }
+        .topic-input {
+            width: 100%;
+            height: 54px;
+            padding: 0 16px;
+            border: 1px solid rgba(255,255,255,.1);
+            border-radius: 14px;
+            outline: none;
+            background: rgba(0,0,0,.35);
+            color: white;
+            transition: border-color .25s ease, box-shadow .25s ease;
+        }
+        .topic-input::placeholder { color: #636366; }
+        .topic-input:focus {
+            border-color: rgba(10,132,255,.72);
+            box-shadow: 0 0 0 4px rgba(10,132,255,.12), 0 0 30px rgba(10,132,255,.08);
+        }
+
+        .form-group { margin-top: 20px; }
+        .segmented {
+            display: grid;
+            gap: 5px;
+            padding: 4px;
+            border: 1px solid rgba(255,255,255,.07);
+            border-radius: 14px;
+            background: rgba(0,0,0,.28);
+        }
+        .segmented.two { grid-template-columns: 1fr 1fr; }
+        .segmented.three { grid-template-columns: repeat(3, 1fr); }
+        .segment {
+            min-height: 42px;
+            padding: 8px;
+            border: 0;
+            border-radius: 10px;
+            background: transparent;
+            color: #8e8e93;
+            font-size: 12px;
+            line-height: 1.2;
+            cursor: pointer;
+            transition: all .28s ease;
+        }
+        .segment.active {
+            background: rgba(255,255,255,.11);
+            color: white;
+            box-shadow: inset 0 1px 0 rgba(255,255,255,.09), 0 3px 10px rgba(0,0,0,.2);
+        }
+
+        .primary-button {
+            position: relative;
+            display: flex;
+            width: 100%;
+            height: 56px;
+            margin-top: 22px;
+            align-items: center;
+            justify-content: center;
+            gap: 9px;
+            overflow: hidden;
+            border: 0;
+            border-radius: 15px;
+            background: linear-gradient(110deg, #087bf2, #7165ff 58%, #9b5cff);
+            color: white;
+            font-size: 15px;
+            font-weight: 700;
+            box-shadow: 0 12px 35px rgba(73,87,255,.3), inset 0 1px 0 rgba(255,255,255,.25);
+            cursor: pointer;
+            transition: transform .2s ease, filter .2s ease;
+        }
+        .primary-button:active { transform: scale(.975); filter: brightness(.92); }
+        .primary-button:disabled { opacity: .68; cursor: wait; }
+        .primary-button.loading::after {
+            content: "";
+            position: absolute;
+            inset: 0;
+            background: linear-gradient(100deg, transparent 25%, rgba(255,255,255,.25) 48%, transparent 72%);
+            transform: translateX(-100%);
+            animation: shimmer 1.15s infinite;
+        }
+        @keyframes shimmer { to { transform: translateX(100%); } }
+
+        .result { margin-top: 18px; }
+        .result-header { display: flex; justify-content: space-between; align-items: end; margin: 32px 2px 13px; }
+        .result-title { margin: 0; font-size: 21px; letter-spacing: -.03em; }
+        .copy-button {
+            padding: 7px 10px;
+            border: 1px solid var(--border);
+            border-radius: 9px;
+            background: var(--surface);
+            color: #b9b9bf;
+            font-size: 12px;
+        }
+        .scene-block { padding: 18px; margin-bottom: 11px; }
+        .scene-top { display: flex; justify-content: space-between; gap: 10px; margin-bottom: 15px; }
+        .scene-name { font-weight: 650; letter-spacing: -.02em; }
+        .timing { color: #a78bfa; font-size: 12px; font-weight: 650; white-space: nowrap; }
+        .detail { margin-top: 12px; }
+        .detail-label { color: #77777d; font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+        .detail p { margin: 5px 0 0; color: #d7d7db; font-size: 14px; line-height: 1.55; }
+
+        .section-title { margin: 4px 0 8px; font-size: 31px; letter-spacing: -.045em; }
+        .section-subtitle { margin: 0 0 24px; color: var(--muted); font-size: 15px; }
+        .empty-state { padding: 38px 20px; text-align: center; }
+        .empty-glyph { font-size: 32px; margin-bottom: 12px; }
+        .empty-state h3 { margin: 0 0 7px; font-size: 17px; }
+        .empty-state p { margin: 0; color: var(--muted); font-size: 14px; line-height: 1.45; }
+        .history-card { padding: 17px; margin-bottom: 11px; cursor: pointer; transition: all .25s ease; }
+        .history-card:active { transform: scale(.985); background: var(--surface-strong); }
+        .history-meta { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 9px; color: #77777d; font-size: 11px; }
+        .history-topic { margin: 0; font-size: 16px; line-height: 1.35; }
+
+        .profile-hero { padding: 23px; }
+        .avatar {
+            display: grid;
+            width: 58px;
+            height: 58px;
+            margin-bottom: 18px;
+            place-items: center;
+            border-radius: 18px;
+            background: linear-gradient(145deg, #0a84ff, #8b5cf6);
+            box-shadow: 0 12px 35px rgba(89,76,255,.35);
+            font-size: 24px;
+            font-weight: 750;
+        }
+        .profile-name { margin: 0; font-size: 24px; letter-spacing: -.04em; }
+        .profile-id { margin: 5px 0 22px; color: var(--muted); font-size: 13px; }
+        .stat-row { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; }
+        .stat { padding: 14px; border: 1px solid rgba(255,255,255,.07); border-radius: 14px; background: rgba(0,0,0,.22); }
+        .stat-value { font-size: 18px; font-weight: 700; }
+        .stat-label { margin-top: 4px; color: var(--muted); font-size: 11px; }
+        .premium-card { position: relative; overflow: hidden; margin-top: 13px; padding: 20px; }
+        .premium-card::after {
+            content: ""; position: absolute; width: 160px; height: 160px; right: -55px; top: -80px;
+            border-radius: 50%; background: rgba(139,92,246,.22); filter: blur(24px);
+        }
+        .premium-card h3 { position: relative; z-index: 1; margin: 0 0 8px; font-size: 18px; }
+        .premium-card p { position: relative; z-index: 1; margin: 0; color: var(--muted); font-size: 13px; line-height: 1.45; }
+        .compact-button { width: auto; height: 42px; margin-top: 17px; padding: 0 17px; border-radius: 12px; font-size: 13px; }
+
+        .tabbar-wrap {
+            position: fixed;
+            z-index: 30;
+            right: 0;
+            bottom: calc(12px + var(--safe-bottom));
+            left: 0;
+            display: flex;
+            justify-content: center;
+            padding: 0 18px;
+            pointer-events: none;
+        }
+        .tabbar {
+            display: grid;
+            width: min(100%, 440px);
+            grid-template-columns: repeat(3, 1fr);
+            padding: 6px;
+            border: 1px solid rgba(255,255,255,.15);
+            border-radius: 24px;
+            background: rgba(28,28,30,.72);
+            box-shadow: 0 18px 50px rgba(0,0,0,.52), inset 0 1px 0 rgba(255,255,255,.08);
+            backdrop-filter: blur(24px) saturate(150%);
+            -webkit-backdrop-filter: blur(24px) saturate(150%);
+            pointer-events: auto;
+        }
+        .tab {
+            min-height: 52px;
+            border: 0;
+            border-radius: 18px;
+            background: transparent;
+            color: #77777d;
+            cursor: pointer;
+            transition: all .3s ease;
+        }
+        .tab.active { background: rgba(255,255,255,.1); color: white; box-shadow: inset 0 1px 0 rgba(255,255,255,.06); }
+        .tab-icon { display: block; height: 19px; font-size: 17px; line-height: 1; }
+        .tab-label { display: block; margin-top: 3px; font-size: 9px; font-weight: 600; }
+
+        .modal-backdrop {
+            position: fixed; z-index: 50; inset: 0; display: none; align-items: end; justify-content: center;
+            padding: 18px 18px calc(18px + env(safe-area-inset-bottom)); background: rgba(0,0,0,.68);
+            backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
+        }
+        .modal-backdrop.open { display: flex; animation: fade .25s ease; }
+        @keyframes fade { from { opacity: 0; } }
+        .modal {
+            width: min(100%, 520px); padding: 24px; border: 1px solid rgba(255,255,255,.15); border-radius: 26px;
+            background: #18181b; box-shadow: 0 30px 100px rgba(0,0,0,.65); animation: sheet .36s cubic-bezier(.2,.8,.2,1);
+        }
+        @keyframes sheet { from { transform: translateY(45px); opacity: .5; } }
+        .modal-symbol { display: grid; width: 52px; height: 52px; place-items: center; border-radius: 16px; background: linear-gradient(145deg,#0a84ff,#9b5cff); font-size: 25px; }
+        .modal h2 { margin: 19px 0 9px; font-size: 27px; letter-spacing: -.04em; }
+        .modal p { margin: 0; color: var(--muted); line-height: 1.5; }
+        .price-line { display: flex; justify-content: space-between; margin: 22px 0 4px; padding: 15px 0; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
+        .price { font-weight: 720; }
+        .secondary-button { width: 100%; height: 44px; margin-top: 9px; border: 0; background: transparent; color: var(--muted); }
+
+        .toast {
+            position: fixed; z-index: 80; top: calc(14px + env(safe-area-inset-top)); left: 50%;
+            max-width: calc(100% - 36px); padding: 11px 15px; border: 1px solid var(--border); border-radius: 12px;
+            background: rgba(35,35,38,.9); box-shadow: 0 12px 40px rgba(0,0,0,.45); backdrop-filter: blur(18px);
+            color: white; font-size: 13px; transform: translate(-50%, -20px); opacity: 0; pointer-events: none; transition: all .28s ease;
+        }
+        .toast.show { transform: translate(-50%, 0); opacity: 1; }
+        .hidden { display: none !important; }
+
+        @media (prefers-reduced-motion: reduce) {
+            *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
+        }
+    </style>
+</head>
+<body>
+    <main class="app-shell">
+        <header class="topbar">
+            <div class="brand">
+                <div class="brand-mark" aria-hidden="true">∞</div>
+                <span class="brand-name">omnia</span>
+            </div>
+            <div class="credit-pill" id="creditPill">
+                <span class="credit-dot"></span>
+                <span id="creditText">3 генерации</span>
+            </div>
+        </header>
+
+        <section class="view active" id="generatorView" aria-labelledby="generatorTitle">
+            <p class="eyebrow">AI Director Studio</p>
+            <h1 id="generatorTitle">Идея в кадре.<br>За секунды.</h1>
+            <p class="lead">Режиссёрский сценарий с таймингом, текстом, светом и саунд-дизайном.</p>
+
+            <form class="glass-card form-card" id="generatorForm">
+                <label class="label" for="topicInput">Тема видео</label>
+                <input class="topic-input" id="topicInput" type="text" minlength="3" maxlength="180" autocomplete="off" placeholder="Например: Как перестать откладывать жизнь" required>
+
+                <div class="form-group">
+                    <span class="label">Длительность</span>
+                    <div class="segmented two" data-selector="duration">
+                        <button class="segment active" type="button" data-value="short">Shorts / Reels<br>60 секунд</button>
+                        <button class="segment" type="button" data-value="long">YouTube<br>5–10 минут</button>
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <span class="label">Тональность</span>
+                    <div class="segmented three" data-selector="tone">
+                        <button class="segment active" type="button" data-value="hype">Динамичный<br>хайп</button>
+                        <button class="segment" type="button" data-value="emotional">Эмоцио-<br>нальный</button>
+                        <button class="segment" type="button" data-value="educational">Обуча-<br>ющий</button>
+                    </div>
+                </div>
+
+                <button class="primary-button" id="generateButton" type="submit">
+                    <span aria-hidden="true">✦</span><span id="generateButtonText">Сгенерировать сценарий</span>
+                </button>
+            </form>
+            <div id="resultContainer" class="result"></div>
+        </section>
+
+        <section class="view" id="scenariosView" aria-labelledby="scenariosTitle">
+            <h2 class="section-title" id="scenariosTitle">Мои сценарии</h2>
+            <p class="section-subtitle">Все идеи под рукой, от свежих к первым.</p>
+            <div id="scenariosList"></div>
+        </section>
+
+        <section class="view" id="profileView" aria-labelledby="profileTitle">
+            <h2 class="section-title" id="profileTitle">Профиль</h2>
+            <p class="section-subtitle">Ваше пространство в omnia.</p>
+            <div class="glass-card profile-hero">
+                <div class="avatar" id="profileAvatar">O</div>
+                <h3 class="profile-name" id="profileName">Пользователь</h3>
+                <p class="profile-id" id="profileId">Telegram ID —</p>
+                <div class="stat-row">
+                    <div class="stat"><div class="stat-value" id="profileLimit">3</div><div class="stat-label">Генераций доступно</div></div>
+                    <div class="stat"><div class="stat-value" id="profileScripts">0</div><div class="stat-label">Сценариев создано</div></div>
+                </div>
+            </div>
+            <div class="glass-card premium-card">
+                <h3 id="premiumTitle">omnia Premium ✦</h3>
+                <p id="premiumDescription">Безлимитные генерации для системной работы с контентом.</p>
+                <button class="primary-button compact-button" id="profileBuyButton" type="button">Получить за 300 ⭐</button>
+            </div>
+        </section>
+    </main>
+
+    <nav class="tabbar-wrap" aria-label="Основная навигация">
+        <div class="tabbar">
+            <button class="tab active" type="button" data-view="generatorView"><span class="tab-icon">✦</span><span class="tab-label">Генератор</span></button>
+            <button class="tab" type="button" data-view="scenariosView"><span class="tab-icon">▤</span><span class="tab-label">Мои сценарии</span></button>
+            <button class="tab" type="button" data-view="profileView"><span class="tab-icon">◉</span><span class="tab-label">Профиль</span></button>
+        </div>
+    </nav>
+
+    <div class="modal-backdrop" id="paywall" role="dialog" aria-modal="true" aria-labelledby="paywallTitle">
+        <div class="modal">
+            <div class="modal-symbol">✦</div>
+            <h2 id="paywallTitle">Продолжайте без лимитов</h2>
+            <p>Бесплатные генерации закончились. Откройте Premium один раз и создавайте сценарии без ограничений.</p>
+            <div class="price-line"><span>omnia Premium</span><span class="price">300 ⭐</span></div>
+            <button class="primary-button" id="payButton" type="button">Оплатить в Telegram</button>
+            <button class="secondary-button" id="closePaywall" type="button">Не сейчас</button>
+        </div>
+    </div>
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+    <script>
+        "use strict";
+
+        const telegram = window.Telegram?.WebApp;
+        const state = {
+            duration: "short",
+            tone: "hype",
+            profile: null,
+            scenarios: [],
+            currentScenario: null
+        };
+
+        const elements = {
+            form: document.getElementById("generatorForm"),
+            topic: document.getElementById("topicInput"),
+            generateButton: document.getElementById("generateButton"),
+            generateButtonText: document.getElementById("generateButtonText"),
+            result: document.getElementById("resultContainer"),
+            scenariosList: document.getElementById("scenariosList"),
+            paywall: document.getElementById("paywall"),
+            payButton: document.getElementById("payButton"),
+            toast: document.getElementById("toast")
+        };
+
+        if (telegram) {
+            telegram.ready();
+            telegram.expand();
+            telegram.setHeaderColor("#09090b");
+            telegram.setBackgroundColor("#09090b");
+        }
+
+        function telegramFeedback(style = "light") {
+            telegram?.HapticFeedback?.impactOccurred(style);
+        }
+
+        async function api(path, options = {}) {
+            const headers = {
+                "Content-Type": "application/json",
+                "X-Telegram-Init-Data": telegram?.initData || "",
+                ...options.headers
+            };
+            // Заголовок действует только при DEVELOPMENT_MODE=true на сервере.
+            if (!telegram?.initData) headers["X-Development-User-Id"] = "100001";
+            const response = await fetch(path, { ...options, headers });
+            const data = await response.json().catch(() => ({ error: "Сервер вернул неизвестный ответ" }));
+            if (!response.ok) {
+                const error = new Error(data.error || "Не удалось выполнить запрос");
+                error.status = response.status;
+                error.data = data;
+                throw error;
+            }
+            return data;
+        }
+
+        function escapeHtml(value) {
+            return String(value).replace(/[&<>'"]/g, character => ({
+                "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#039;", '"': "&quot;"
+            })[character]);
+        }
+
+        function showToast(message) {
+            elements.toast.textContent = message;
+            elements.toast.classList.add("show");
+            window.clearTimeout(showToast.timer);
+            showToast.timer = window.setTimeout(() => elements.toast.classList.remove("show"), 2300);
+        }
+
+        function updateProfile(profile) {
+            state.profile = profile;
+            const isPremium = profile.is_premium;
+            document.getElementById("creditText").textContent = isPremium
+                ? "Premium"
+                : `${profile.free_generations} ${profile.free_generations === 1 ? "генерация" : "генерации"}`;
+            document.getElementById("profileName").textContent = profile.username || "Пользователь";
+            document.getElementById("profileId").textContent = `Telegram ID ${profile.id}`;
+            document.getElementById("profileLimit").textContent = isPremium ? "∞" : profile.free_generations;
+            document.getElementById("profileAvatar").textContent = (profile.username || "O")[0].toUpperCase();
+            document.getElementById("premiumTitle").textContent = isPremium ? "Premium активен ✦" : "omnia Premium ✦";
+            document.getElementById("premiumDescription").textContent = isPremium
+                ? "Ваши генерации доступны без ограничений."
+                : "Безлимитные генерации для системной работы с контентом.";
+            document.getElementById("profileBuyButton").classList.toggle("hidden", isPremium);
+        }
+
+        function sceneHtml(scene) {
+            return `
+                <article class="glass-card scene-block">
+                    <div class="scene-top"><span class="scene-name">${escapeHtml(scene.title)}</span><span class="timing">⏱ ${escapeHtml(scene.timing)}</span></div>
+                    <div class="detail"><span class="detail-label">Что происходит в кадре</span><p>${escapeHtml(scene.frame)}</p></div>
+                    <div class="detail"><span class="detail-label">Текст спикера</span><p>${escapeHtml(scene.speaker)}</p></div>
+                    <div class="detail"><span class="detail-label">Световая атмосфера</span><p>${escapeHtml(scene.light)}</p></div>
+                    <div class="detail"><span class="detail-label">Звуки и эффекты</span><p>${escapeHtml(scene.sound)}</p></div>
+                </article>`;
+        }
+
+        function renderResult(scenario) {
+            state.currentScenario = scenario;
+            elements.result.innerHTML = `
+                <div class="result-header"><h2 class="result-title">${escapeHtml(scenario.topic)}</h2><button class="copy-button" id="copyScenario" type="button">Скопировать</button></div>
+                ${scenario.content.map(sceneHtml).join("")}`;
+            document.getElementById("copyScenario").addEventListener("click", copyCurrentScenario);
+            elements.result.scrollIntoView({ behavior: "smooth", block: "start" });
+        }
+
+        async function copyCurrentScenario() {
+            if (!state.currentScenario) return;
+            const text = state.currentScenario.content.map(scene => [
+                `${scene.title} [${scene.timing}]`,
+                `Кадр: ${scene.frame}`,
+                `Текст спикера: ${scene.speaker}`,
+                `Свет: ${scene.light}`,
+                `Звук: ${scene.sound}`
+            ].join("\n")).join("\n\n");
+            try {
+                await navigator.clipboard.writeText(text);
+                telegram?.HapticFeedback?.notificationOccurred("success");
+                showToast("Сценарий скопирован");
+            } catch {
+                showToast("Не удалось скопировать текст");
+            }
+        }
+
+        function renderScenarioList() {
+            document.getElementById("profileScripts").textContent = state.scenarios.length;
+            if (!state.scenarios.length) {
+                elements.scenariosList.innerHTML = `
+                    <div class="glass-card empty-state"><div class="empty-glyph">✦</div><h3>Здесь появятся идеи</h3><p>Создайте первый сценарий в генераторе — он сохранится автоматически.</p></div>`;
+                return;
+            }
+            const durationNames = { short: "Shorts / Reels", long: "YouTube" };
+            elements.scenariosList.innerHTML = state.scenarios.map((scenario, index) => `
+                <article class="glass-card history-card" data-index="${index}">
+                    <div class="history-meta"><span>${durationNames[scenario.duration] || scenario.duration}</span><span>${escapeHtml(scenario.created_at.slice(0, 10))}</span></div>
+                    <h3 class="history-topic">${escapeHtml(scenario.topic)}</h3>
+                </article>`).join("");
+            elements.scenariosList.querySelectorAll(".history-card").forEach(card => {
+                card.addEventListener("click", () => {
+                    const scenario = state.scenarios[Number(card.dataset.index)];
+                    switchView("generatorView");
+                    renderResult(scenario);
+                });
+            });
+        }
+
+        async function loadScenarios() {
+            const data = await api("/api/scenarios");
+            state.scenarios = data.scenarios;
+            renderScenarioList();
+        }
+
+        function switchView(viewId) {
+            document.querySelectorAll(".view").forEach(view => view.classList.toggle("active", view.id === viewId));
+            document.querySelectorAll(".tab").forEach(tab => tab.classList.toggle("active", tab.dataset.view === viewId));
+            telegramFeedback("light");
+            window.scrollTo({ top: 0, behavior: "smooth" });
+            if (viewId === "scenariosView") loadScenarios().catch(handleError);
+        }
+
+        function openPaywall() {
+            elements.paywall.classList.add("open");
+            telegram?.HapticFeedback?.notificationOccurred("warning");
+        }
+
+        function closePaywall() {
+            elements.paywall.classList.remove("open");
+        }
+
+        async function buyPremium() {
+            try {
+                elements.payButton.disabled = true;
+                elements.payButton.textContent = "Создаём счёт…";
+                const data = await api("/api/invoice", { method: "POST", body: "{}" });
+                if (data.already_premium) {
+                    closePaywall();
+                    await refreshProfile();
+                    return;
+                }
+                if (!telegram?.openInvoice) throw new Error("Оплата доступна только внутри Telegram");
+                telegram.openInvoice(data.invoice_url, async status => {
+                    elements.payButton.disabled = false;
+                    elements.payButton.textContent = "Оплатить в Telegram";
+                    if (status === "paid") {
+                        closePaywall();
+                        // Даём обработчику successful_payment обновить базу и затем синхронизируем экран.
+                        window.setTimeout(async () => {
+                            await refreshProfile();
+                            showToast("Premium активирован ✦");
+                        }, 900);
+                    }
+                });
+            } catch (error) {
+                elements.payButton.disabled = false;
+                elements.payButton.textContent = "Оплатить в Telegram";
+                handleError(error);
+            }
+        }
+
+        async function refreshProfile() {
+            const data = await api("/api/profile");
+            updateProfile(data.profile);
+        }
+
+        function handleError(error) {
+            if (error.data?.paywall || error.status === 402) {
+                openPaywall();
+                return;
+            }
+            showToast(error.message || "Что-то пошло не так");
+        }
+
+        document.querySelectorAll("[data-selector]").forEach(selector => {
+            selector.querySelectorAll(".segment").forEach(button => {
+                button.addEventListener("click", () => {
+                    selector.querySelectorAll(".segment").forEach(item => item.classList.remove("active"));
+                    button.classList.add("active");
+                    state[selector.dataset.selector] = button.dataset.value;
+                    telegramFeedback("light");
+                });
+            });
+        });
+
+        document.querySelectorAll(".tab").forEach(tab => tab.addEventListener("click", () => switchView(tab.dataset.view)));
+        document.getElementById("closePaywall").addEventListener("click", closePaywall);
+        document.getElementById("profileBuyButton").addEventListener("click", openPaywall);
+        elements.payButton.addEventListener("click", buyPremium);
+        elements.paywall.addEventListener("click", event => { if (event.target === elements.paywall) closePaywall(); });
+
+        elements.form.addEventListener("submit", async event => {
+            event.preventDefault();
+            if (state.profile && !state.profile.is_premium && state.profile.free_generations <= 0) {
+                openPaywall();
+                return;
+            }
+            const topic = elements.topic.value.trim();
+            if (topic.length < 3) return showToast("Введите тему видео");
+
+            elements.generateButton.disabled = true;
+            elements.generateButton.classList.add("loading");
+            elements.generateButtonText.textContent = "Создаём драматургию…";
+            telegramFeedback("medium");
+            try {
+                const data = await api("/api/generate", {
+                    method: "POST",
+                    body: JSON.stringify({ topic, duration: state.duration, tone: state.tone })
+                });
+                updateProfile(data.profile);
+                renderResult(data.scenario);
+                await loadScenarios();
+                telegram?.HapticFeedback?.notificationOccurred("success");
+            } catch (error) {
+                handleError(error);
+            } finally {
+                elements.generateButton.disabled = false;
+                elements.generateButton.classList.remove("loading");
+                elements.generateButtonText.textContent = "Сгенерировать сценарий";
+            }
+        });
+
+        Promise.all([refreshProfile(), loadScenarios()]).catch(handleError);
+    </script>
+</body>
+</html>
