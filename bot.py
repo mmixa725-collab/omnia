@@ -389,7 +389,14 @@ def extract_json_from_ai_answer(text: str) -> Any:
     return parsed
 
 
-async def generate_ai_script(topic: str, duration: str, tone: str) -> list[dict[str, str]]:
+async def generate_ai_script(
+    topic: str,
+    duration: str,
+    tone: str,
+    options: dict[str, str] | None = None,
+    existing_content: list[dict[str, str]] | None = None,
+    revision_instruction: str = "",
+) -> list[dict[str, str]]:
     """Сгенерировать сценарий через GenAPI/OpenAI-compatible endpoint."""
     if not AI_API_KEY:
         return make_script(topic, duration, tone)
@@ -400,6 +407,28 @@ async def generate_ai_script(topic: str, duration: str, tone: str) -> list[dict[
         "emotional": "эмоциональный, искренний, мотивирующий",
         "educational": "обучающий, практичный, пошаговый",
     }[tone]
+    options = options or {}
+    option_labels = {
+        "platform": "Площадка",
+        "audience": "Целевая аудитория",
+        "goal": "Цель видео",
+        "format": "Формат съёмки",
+        "cta": "Призыв к действию",
+    }
+    brief_lines = [
+        f"{option_labels[key]}: {value}"
+        for key, value in options.items()
+        if key in option_labels and value
+    ]
+    brief = "\n".join(brief_lines) or "Дополнительных пожеланий нет"
+    revision_context = ""
+    if existing_content and revision_instruction:
+        revision_context = (
+            "\n\nЭто улучшение уже существующего сценария.\n"
+            f"Текущий сценарий: {json.dumps(existing_content, ensure_ascii=False)}\n"
+            f"Задача улучшения: {revision_instruction}\n"
+            "Сохрани удачные детали и структуру остальных блоков."
+        )
 
     system_prompt = (
         "Ты сильный русскоязычный сценарист коротких видео и режиссер монтажа. "
@@ -410,6 +439,9 @@ async def generate_ai_script(topic: str, duration: str, tone: str) -> list[dict[
 Сделай сценарий для темы: {topic}
 Формат: {duration_label}
 Тональность: {tone_label}
+Бриф:
+{brief}
+{revision_context}
 
 Важно:
 - Никакой воды вроде "главная деталь темы" или "три опоры".
@@ -560,6 +592,105 @@ async def api_scenarios(request: web.Request) -> web.Response:
     return web.json_response({"scenarios": scenarios})
 
 
+def scenario_id_from_request(request: web.Request) -> int:
+    try:
+        return int(request.match_info["scenario_id"])
+    except (KeyError, TypeError, ValueError) as error:
+        raise web.HTTPBadRequest(text="Некорректный идентификатор сценария") from error
+
+
+async def api_update_scenario(request: web.Request) -> web.Response:
+    user = current_user(request)
+    scenario_id = scenario_id_from_request(request)
+    try:
+        body = await request.json()
+    except json.JSONDecodeError:
+        return web.json_response({"error": "Некорректный запрос"}, status=400)
+
+    topic = body.get("topic")
+    favorite = body.get("is_favorite")
+    if topic is not None:
+        topic = str(topic).strip()
+        if not 3 <= len(topic) <= 180:
+            return web.json_response({"error": "Название должно содержать от 3 до 180 символов"}, status=400)
+    if favorite is not None and not isinstance(favorite, bool):
+        return web.json_response({"error": "Некорректное значение избранного"}, status=400)
+
+    scenario = await asyncio.to_thread(
+        database.update_scenario,
+        user["id"],
+        scenario_id,
+        topic=topic,
+        is_favorite=favorite,
+    )
+    if scenario is None:
+        return web.json_response({"error": "Сценарий не найден"}, status=404)
+    return web.json_response({"scenario": scenario})
+
+
+async def api_delete_scenario(request: web.Request) -> web.Response:
+    user = current_user(request)
+    scenario_id = scenario_id_from_request(request)
+    deleted = await asyncio.to_thread(database.delete_scenario, user["id"], scenario_id)
+    if not deleted:
+        return web.json_response({"error": "Сценарий не найден"}, status=404)
+    return web.json_response({"deleted": True})
+
+
+async def api_refine_scenario(request: web.Request) -> web.Response:
+    user = current_user(request)
+    scenario_id = scenario_id_from_request(request)
+    profile = await asyncio.to_thread(
+        ensure_premium_access,
+        user["id"],
+        user.get("username") or user.get("first_name"),
+    )
+    if not profile["is_premium"]:
+        return web.json_response(
+            {"error": "Улучшение отдельных частей доступно в Premium", "paywall": True},
+            status=402,
+        )
+    scenario = await asyncio.to_thread(database.get_scenario, user["id"], scenario_id)
+    if scenario is None:
+        return web.json_response({"error": "Сценарий не найден"}, status=404)
+
+    try:
+        body = await request.json()
+    except json.JSONDecodeError:
+        return web.json_response({"error": "Некорректный запрос"}, status=400)
+    action = str(body.get("action", ""))
+    requested_tone = str(body.get("tone", scenario["tone"]))
+    if requested_tone not in {"hype", "emotional", "educational"}:
+        requested_tone = scenario["tone"]
+    instructions = {
+        "stronger_hook": "Перепиши только первый блок: сделай хук конкретнее, неожиданнее и сильнее. Остальные блоки почти не меняй.",
+        "shorter": "Сократи текст спикера во всех блоках примерно на 30 процентов, сохранив смысл, факты и естественный ритм.",
+        "new_finale": "Перепиши только финальный блок: усили вывод и сделай призыв к действию конкретным и ненавязчивым.",
+        "change_tone": "Перепиши текст спикера под выбранную тональность, сохрани факты, тайминг и логику кадров.",
+    }
+    if action not in instructions:
+        return web.json_response({"error": "Неизвестное действие улучшения"}, status=400)
+
+    try:
+        content = await generate_ai_script(
+            scenario["topic"],
+            scenario["duration"],
+            requested_tone,
+            existing_content=scenario["content"],
+            revision_instruction=instructions[action],
+        )
+    except RuntimeError as error:
+        return web.json_response({"error": str(error)}, status=502)
+    updated = await asyncio.to_thread(
+        database.update_scenario,
+        user["id"],
+        scenario_id,
+        tone=requested_tone if action == "change_tone" else None,
+        content=content,
+    )
+    return web.json_response({"scenario": updated, "profile": profile})
+
+
 async def api_generate(request: web.Request) -> web.Response:
     user = current_user(request)
     try:
@@ -570,6 +701,12 @@ async def api_generate(request: web.Request) -> web.Response:
     topic = str(body.get("topic", "")).strip()
     duration = str(body.get("duration", ""))
     tone = str(body.get("tone", ""))
+    raw_options = body.get("options") if isinstance(body.get("options"), dict) else {}
+    options = {
+        key: str(raw_options.get(key, "")).strip()[:180]
+        for key in ("platform", "audience", "goal", "format", "cta")
+        if str(raw_options.get(key, "")).strip()
+    }
     if not 3 <= len(topic) <= 180:
         return web.json_response(
             {"error": "Введите тему длиной от 3 до 180 символов"}, status=400
@@ -594,14 +731,24 @@ async def api_generate(request: web.Request) -> web.Response:
         )
 
     try:
-        content = await generate_ai_script(topic, duration, tone)
+        content = await generate_ai_script(topic, duration, tone, options=options)
     except RuntimeError as error:
         return web.json_response({"error": str(error)}, status=502)
     scenario_id = await asyncio.to_thread(
         database.save_scenario, user["id"], topic, duration, tone, content
     )
     return web.json_response(
-        {"scenario": {"id": scenario_id, "topic": topic, "content": content}, "profile": profile}
+        {
+            "scenario": {
+                "id": scenario_id,
+                "topic": topic,
+                "duration": duration,
+                "tone": tone,
+                "content": content,
+                "is_favorite": False,
+            },
+            "profile": profile,
+        }
     )
 
 
@@ -817,6 +964,9 @@ async def run() -> None:
             web.get("/health", health),
             web.get("/api/profile", api_profile),
             web.get("/api/scenarios", api_scenarios),
+            web.patch("/api/scenarios/{scenario_id}", api_update_scenario),
+            web.delete("/api/scenarios/{scenario_id}", api_delete_scenario),
+            web.post("/api/scenarios/{scenario_id}/refine", api_refine_scenario),
             web.post("/api/generate", api_generate),
             web.post("/api/invoice", api_invoice),
             web.post("/telegram/webhook", telegram_webhook),

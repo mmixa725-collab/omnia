@@ -16,6 +16,16 @@ from typing import Any
 DEFAULT_FREE_GENERATIONS = 3
 
 
+class ClosingSQLiteConnection(sqlite3.Connection):
+    """SQLite-соединение, которое гарантированно закрывается после блока with."""
+
+    def __exit__(self, exc_type, exc_value, traceback) -> bool | None:
+        try:
+            return super().__exit__(exc_type, exc_value, traceback)
+        finally:
+            self.close()
+
+
 class Database:
     """Небольшой репозиторий пользователей, сценариев и платежей."""
 
@@ -23,7 +33,11 @@ class Database:
         self.database_path = str(database_path)
 
     def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.database_path, timeout=10)
+        connection = sqlite3.connect(
+            self.database_path,
+            timeout=10,
+            factory=ClosingSQLiteConnection,
+        )
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
         connection.execute("PRAGMA busy_timeout = 10000")
@@ -71,6 +85,15 @@ class Database:
                 ON scenarios(user_id, created_at DESC);
                 """
             )
+            scenario_columns = {
+                row["name"]
+                for row in connection.execute("PRAGMA table_info(scenarios)").fetchall()
+            }
+            if "is_favorite" not in scenario_columns:
+                connection.execute(
+                    "ALTER TABLE scenarios ADD COLUMN is_favorite INTEGER NOT NULL DEFAULT 0 "
+                    "CHECK (is_favorite IN (0, 1))"
+                )
 
     @staticmethod
     def _user_to_dict(row: sqlite3.Row) -> dict[str, Any]:
@@ -170,7 +193,7 @@ class Database:
         with self._connect() as connection:
             rows = connection.execute(
                 """
-                SELECT id, topic, duration, tone, content, created_at
+                SELECT id, topic, duration, tone, content, is_favorite, created_at
                 FROM scenarios
                 WHERE user_id = ?
                 ORDER BY id DESC
@@ -185,10 +208,72 @@ class Database:
                 "duration": row["duration"],
                 "tone": row["tone"],
                 "content": json.loads(row["content"]),
+                "is_favorite": bool(row["is_favorite"]),
                 "created_at": row["created_at"],
             }
             for row in rows
         ]
+
+    def get_scenario(self, user_id: int, scenario_id: int) -> dict[str, Any] | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT id, topic, duration, tone, content, is_favorite, created_at
+                FROM scenarios WHERE id = ? AND user_id = ?
+                """,
+                (scenario_id, user_id),
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "id": row["id"],
+            "topic": row["topic"],
+            "duration": row["duration"],
+            "tone": row["tone"],
+            "content": json.loads(row["content"]),
+            "is_favorite": bool(row["is_favorite"]),
+            "created_at": row["created_at"],
+        }
+
+    def update_scenario(
+        self,
+        user_id: int,
+        scenario_id: int,
+        *,
+        topic: str | None = None,
+        tone: str | None = None,
+        content: list[dict[str, str]] | None = None,
+        is_favorite: bool | None = None,
+    ) -> dict[str, Any] | None:
+        updates: list[str] = []
+        values: list[Any] = []
+        if topic is not None:
+            updates.append("topic = ?")
+            values.append(topic)
+        if tone is not None:
+            updates.append("tone = ?")
+            values.append(tone)
+        if content is not None:
+            updates.append("content = ?")
+            values.append(json.dumps(content, ensure_ascii=False))
+        if is_favorite is not None:
+            updates.append("is_favorite = ?")
+            values.append(int(is_favorite))
+        if updates:
+            with self._connect() as connection:
+                connection.execute(
+                    f"UPDATE scenarios SET {', '.join(updates)} WHERE id = ? AND user_id = ?",
+                    (*values, scenario_id, user_id),
+                )
+        return self.get_scenario(user_id, scenario_id)
+
+    def delete_scenario(self, user_id: int, scenario_id: int) -> bool:
+        with self._connect() as connection:
+            cursor = connection.execute(
+                "DELETE FROM scenarios WHERE id = ? AND user_id = ?",
+                (scenario_id, user_id),
+            )
+            return cursor.rowcount == 1
 
     def activate_premium(
         self,
@@ -275,6 +360,7 @@ class PostgresDatabase:
                 duration TEXT NOT NULL,
                 tone TEXT NOT NULL,
                 content JSONB NOT NULL,
+                is_favorite INTEGER NOT NULL DEFAULT 0 CHECK (is_favorite IN (0, 1)),
                 created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
             )
             """,
@@ -289,6 +375,7 @@ class PostgresDatabase:
             )
             """,
             "CREATE INDEX IF NOT EXISTS scenarios_user_created_index ON scenarios(user_id, created_at DESC)",
+            "ALTER TABLE scenarios ADD COLUMN IF NOT EXISTS is_favorite INTEGER NOT NULL DEFAULT 0 CHECK (is_favorite IN (0, 1))",
         )
         with self._connect() as connection:
             with connection.cursor() as cursor:
@@ -370,7 +457,7 @@ class PostgresDatabase:
             with connection.cursor() as cursor:
                 cursor.execute(
                     """
-                    SELECT id, topic, duration, tone, content, created_at
+                    SELECT id, topic, duration, tone, content, is_favorite, created_at
                     FROM scenarios WHERE user_id = %s
                     ORDER BY id DESC LIMIT %s
                     """,
@@ -384,10 +471,76 @@ class PostgresDatabase:
                 "duration": row["duration"],
                 "tone": row["tone"],
                 "content": row["content"],
+                "is_favorite": bool(row["is_favorite"]),
                 "created_at": row["created_at"].isoformat(),
             }
             for row in rows
         ]
+
+    def get_scenario(self, user_id: int, scenario_id: int) -> dict[str, Any] | None:
+        with self._connect() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT id, topic, duration, tone, content, is_favorite, created_at
+                    FROM scenarios WHERE id = %s AND user_id = %s
+                    """,
+                    (scenario_id, user_id),
+                )
+                row = cursor.fetchone()
+        if row is None:
+            return None
+        return {
+            "id": row["id"],
+            "topic": row["topic"],
+            "duration": row["duration"],
+            "tone": row["tone"],
+            "content": row["content"],
+            "is_favorite": bool(row["is_favorite"]),
+            "created_at": row["created_at"].isoformat(),
+        }
+
+    def update_scenario(
+        self,
+        user_id: int,
+        scenario_id: int,
+        *,
+        topic: str | None = None,
+        tone: str | None = None,
+        content: list[dict[str, str]] | None = None,
+        is_favorite: bool | None = None,
+    ) -> dict[str, Any] | None:
+        updates: list[str] = []
+        values: list[Any] = []
+        if topic is not None:
+            updates.append("topic = %s")
+            values.append(topic)
+        if tone is not None:
+            updates.append("tone = %s")
+            values.append(tone)
+        if content is not None:
+            updates.append("content = %s::jsonb")
+            values.append(json.dumps(content, ensure_ascii=False))
+        if is_favorite is not None:
+            updates.append("is_favorite = %s")
+            values.append(int(is_favorite))
+        if updates:
+            with self._connect() as connection:
+                with connection.cursor() as cursor:
+                    cursor.execute(
+                        f"UPDATE scenarios SET {', '.join(updates)} WHERE id = %s AND user_id = %s",
+                        (*values, scenario_id, user_id),
+                    )
+        return self.get_scenario(user_id, scenario_id)
+
+    def delete_scenario(self, user_id: int, scenario_id: int) -> bool:
+        with self._connect() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "DELETE FROM scenarios WHERE id = %s AND user_id = %s",
+                    (scenario_id, user_id),
+                )
+                return cursor.rowcount == 1
 
     def activate_premium(
         self,
