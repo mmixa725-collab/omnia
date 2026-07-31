@@ -83,6 +83,13 @@ def ai_endpoint_url() -> str:
     return AI_BASE_URL
 
 
+def ai_model_name() -> str:
+    """Normalize GenAPI page slug to a real DeepSeek V4 model version."""
+    if AI_MODEL == "deepseek-v4":
+        return "deepseek-v4-flash"
+    return AI_MODEL
+
+
 def extract_ai_message_content(data: Any) -> str:
     """Support OpenAI-compatible and GenAPI native response shapes."""
     if not isinstance(data, dict):
@@ -277,7 +284,7 @@ async def generate_ai_script(topic: str, duration: str, tone: str) -> list[dict[
     payload = {
         "callback_url": None,
         "is_sync": True,
-        "model": AI_MODEL,
+        "model": ai_model_name(),
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
@@ -299,7 +306,18 @@ async def generate_ai_script(topic: str, duration: str, tone: str) -> list[dict[
                 response_text = await response.text()
                 if response.status >= 400:
                     logging.error("AI API returned %s: %s", response.status, response_text[:500])
-                    raise RuntimeError(f"GenAPI вернул ошибку {response.status}")
+                    detail = response_text[:240]
+                    try:
+                        error_payload = json.loads(response_text)
+                        detail = str(
+                            error_payload.get("message")
+                            or error_payload.get("detail")
+                            or error_payload.get("error")
+                            or error_payload
+                        )[:240]
+                    except json.JSONDecodeError:
+                        pass
+                    raise RuntimeError(f"GenAPI вернул ошибку {response.status}: {detail}")
                 data = json.loads(response_text)
     except RuntimeError:
         raise
@@ -461,6 +479,7 @@ async def health(_: web.Request) -> web.Response:
             "status": "ok",
             "ai_enabled": bool(AI_API_KEY),
             "ai_model": AI_MODEL,
+            "ai_effective_model": ai_model_name(),
             "ai_base_url": AI_BASE_URL,
             "ai_endpoint": ai_endpoint_url(),
         }
