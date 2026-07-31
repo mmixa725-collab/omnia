@@ -68,6 +68,13 @@ database = create_database(DATABASE_URL or DATABASE_PATH)
 router = Router()
 
 
+def ai_chat_completions_url() -> str:
+    """Return a full OpenAI-compatible chat completions endpoint."""
+    if AI_BASE_URL.endswith("/chat/completions"):
+        return AI_BASE_URL
+    return f"{AI_BASE_URL}/chat/completions"
+
+
 def validate_init_data(init_data: str) -> dict[str, Any] | None:
     """Проверить подпись Telegram Web App и вернуть пользователя."""
     if not init_data or not BOT_TOKEN:
@@ -244,7 +251,7 @@ async def generate_ai_script(topic: str, duration: str, tone: str) -> list[dict[
 
     try:
         async with ClientSession(timeout=timeout) as session:
-            async with session.post(AI_BASE_URL, headers=headers, json=payload) as response:
+            async with session.post(ai_chat_completions_url(), headers=headers, json=payload) as response:
                 response_text = await response.text()
                 if response.status >= 400:
                     logging.error("AI API returned %s: %s", response.status, response_text[:500])
@@ -413,6 +420,7 @@ async def health(_: web.Request) -> web.Response:
             "ai_enabled": bool(AI_API_KEY),
             "ai_model": AI_MODEL,
             "ai_base_url": AI_BASE_URL,
+            "ai_endpoint": ai_chat_completions_url(),
         }
     )
 
