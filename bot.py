@@ -20,6 +20,8 @@ from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.exceptions import TelegramNetworkError
 from aiogram.filters import CommandStart
 from aiogram.types import (
+    CallbackQuery,
+    FSInputFile,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     LabeledPrice,
@@ -61,7 +63,7 @@ MANUAL_PREMIUM_USER_IDS = {
     },
 }
 
-PRICE_STARS = 300
+PRICE_STARS = 200
 PAYLOAD_PREFIX = "omnia-premium"
 
 database = create_database(DATABASE_URL or DATABASE_PATH)
@@ -620,7 +622,7 @@ async def api_invoice(request: web.Request) -> web.Response:
         description="Безлимитная генерация и сохранение сценариев в omnia",
         payload=payload,
         currency="XTR",
-        prices=[LabeledPrice(label="Подписка VibeScript AI", amount=300)],
+        prices=[LabeledPrice(label="Подписка VibeScript AI", amount=PRICE_STARS)],
     )
     return web.json_response({"invoice_url": invoice_link})
 
@@ -662,27 +664,75 @@ async def telegram_webhook(request: web.Request) -> web.Response:
 
 @router.message(CommandStart())
 async def start_handler(message: Message) -> None:
+    """Показывает пользователю премиальную welcome-карточку omnia."""
     if message.from_user is None:
         return
-    await asyncio.to_thread(
-        ensure_premium_access, message.from_user.id, message.from_user.username
+
+    profile = await asyncio.to_thread(
+        ensure_premium_access,
+        message.from_user.id,
+        message.from_user.username,
     )
-    keyboard = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text="Открыть приложение",
-                    web_app=WebAppInfo(url=APP_URL),
-                )
-            ]
+    premium_button = [] if profile["is_premium"] else [
+        InlineKeyboardButton(
+            text=f"Купить Premium — {PRICE_STARS} ⭐",
+            callback_data="buy_premium",
+        )
+    ]
+    keyboard_rows = [
+        [
+            InlineKeyboardButton(
+                text="Открыть AI-студию ✦",
+                web_app=WebAppInfo(url=APP_URL),
+            )
         ]
+    ]
+    if premium_button:
+        keyboard_rows.append(premium_button)
+
+    caption = (
+        "<b>Добро пожаловать в omnia ✦</b>\n\n"
+        "Ваша персональная AI-студия для создания видео, которые хочется досмотреть.\n\n"
+        "<b>Что умеет omnia:</b>\n"
+        "• превращает любую идею в готовый сценарий;\n"
+        "• расписывает тайминг и действия в кадре;\n"
+        "• пишет естественный текст для спикера;\n"
+        "• подбирает свет, музыку и звуковые эффекты;\n"
+        "• сохраняет все сценарии в вашей истории.\n\n"
+        "<b>Первые 3 генерации — бесплатно.</b>\n"
+        f"Premium без лимитов — {PRICE_STARS} Telegram Stars."
     )
-    await message.answer(
-        "Добро пожаловать в <b>omnia</b>.\n\n"
-        "Создавайте режиссёрские сценарии с таймингом, светом и звуком. "
-        "Первые 3 генерации — бесплатно.",
-        reply_markup=keyboard,
+    await message.answer_photo(
+        photo=FSInputFile(BASE_DIR / "assets" / "welcome-poster.png"),
+        caption=caption,
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard_rows),
         parse_mode="HTML",
+    )
+
+
+@router.callback_query(F.data == "buy_premium")
+async def buy_premium_callback(callback: CallbackQuery) -> None:
+    """Создаёт нативный Telegram Stars Invoice из welcome-карточки."""
+    profile = await asyncio.to_thread(
+        ensure_premium_access,
+        callback.from_user.id,
+        callback.from_user.username,
+    )
+    if profile["is_premium"]:
+        await callback.answer("Premium уже активирован ✦", show_alert=True)
+        return
+    if callback.message is None:
+        await callback.answer()
+        return
+
+    await callback.answer()
+    payload = f"{PAYLOAD_PREFIX}:{callback.from_user.id}:{secrets.token_urlsafe(10)}"
+    await callback.message.answer_invoice(
+        title="omnia Premium",
+        description="Безлимитное создание и сохранение режиссёрских сценариев в omnia",
+        payload=payload,
+        currency="XTR",
+        prices=[LabeledPrice(label="omnia Premium", amount=PRICE_STARS)],
     )
 
 
