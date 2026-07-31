@@ -22,6 +22,6 @@ services:
       - key: AI_API_KEY
         sync: false
       - key: AI_BASE_URL
-        value: "https://proxy.gen-api.ru/v1"
+        value: "https://api.gen-api.ru/api/v1/networks/deepseek-v4"
       - key: AI_MODEL
         value: "deepseek-v4-flash"

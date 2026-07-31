@@ -50,7 +50,7 @@ TELEGRAM_PROXY = os.getenv("TELEGRAM_PROXY", "").strip()
 WEBHOOK_MODE = os.getenv("WEBHOOK_MODE", "false").lower() == "true"
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
 AI_API_KEY = os.getenv("AI_API_KEY", "").strip()
-AI_BASE_URL = os.getenv("AI_BASE_URL", "https://proxy.gen-api.ru/v1").strip().rstrip("/")
+AI_BASE_URL = os.getenv("AI_BASE_URL", "https://api.gen-api.ru/api/v1/networks/deepseek-v4").strip().rstrip("/")
 AI_MODEL = os.getenv("AI_MODEL", "deepseek-v4-flash").strip()
 AI_TIMEOUT_SECONDS = float(os.getenv("AI_TIMEOUT_SECONDS", "55"))
 MANUAL_PREMIUM_USER_IDS = {
@@ -71,17 +71,30 @@ router = Router()
 def ai_endpoint_url() -> str:
     """Return the configured AI endpoint.
 
-    GenAPI's OpenAI-compatible gateway accepts chat-completion payloads at
-    https://proxy.gen-api.ru/v1. Some other providers require a full
-    /chat/completions path, so we keep the value fully configurable.
+    GenAPI's native DeepSeek V4 endpoint is more reliable for this model than
+    the OpenAI-compatible proxy. If an old proxy URL is still present in Render,
+    route it to the native endpoint automatically.
     """
-    return os.getenv("AI_ENDPOINT", "").strip() or AI_BASE_URL
+    explicit_endpoint = os.getenv("AI_ENDPOINT", "").strip().rstrip("/")
+    if explicit_endpoint:
+        return explicit_endpoint
+    if AI_BASE_URL.startswith("https://proxy.gen-api.ru"):
+        return "https://api.gen-api.ru/api/v1/networks/deepseek-v4"
+    return AI_BASE_URL
 
 
 def extract_ai_message_content(data: Any) -> str:
     """Support OpenAI-compatible and GenAPI native response shapes."""
     if not isinstance(data, dict):
         raise RuntimeError("ИИ вернула ответ неизвестного формата")
+
+    error = data.get("error") or data.get("message_error")
+    if error:
+        raise RuntimeError(f"GenAPI вернул ошибку: {error}")
+
+    status = str(data.get("status") or "").lower()
+    if status in {"failed", "error", "canceled", "cancelled"}:
+        raise RuntimeError(f"GenAPI вернул статус {status}")
 
     choices = data.get("choices")
     if isinstance(choices, list) and choices:
@@ -262,6 +275,8 @@ async def generate_ai_script(topic: str, duration: str, tone: str) -> list[dict[
 """.strip()
 
     payload = {
+        "callback_url": None,
+        "is_sync": True,
         "model": AI_MODEL,
         "messages": [
             {"role": "system", "content": system_prompt},
@@ -269,6 +284,7 @@ async def generate_ai_script(topic: str, duration: str, tone: str) -> list[dict[
         ],
         "temperature": 0.85,
         "max_tokens": 1800 if duration == "short" else 3200,
+        "response_format": {"type": "json_object"},
     }
 
     timeout = ClientTimeout(total=AI_TIMEOUT_SECONDS)
