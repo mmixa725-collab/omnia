@@ -12,7 +12,7 @@ import secrets
 import time
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qsl
+from urllib.parse import parse_qsl, quote
 
 from aiohttp import ClientError, ClientSession, ClientTimeout, web
 from aiogram import Bot, Dispatcher, F, Router
@@ -114,7 +114,9 @@ def extract_ai_message_content(data: Any) -> str:
     if isinstance(output, str) and output.strip():
         return output.strip()
     if isinstance(output, list) and output:
-        return "\n".join(str(item) for item in output if item).strip()
+        output_text = extract_text_from_nested_result(output)
+        if output_text:
+            return output_text
     if isinstance(output, dict):
         output_text = extract_text_from_nested_result(output)
         if output_text:
@@ -152,6 +154,56 @@ def extract_ai_message_content(data: Any) -> str:
     logging.error("AI response contains no text. Shape: %s", describe_response_shape(data))
 
     raise RuntimeError("ИИ вернула ответ без текста сценария")
+
+
+async def poll_genapi_result(request_id: Any) -> dict[str, Any]:
+    """Дождаться результата GenAPI, если первый ответ содержит только request_id."""
+    safe_request_id = quote(str(request_id), safe="")
+    result_url = f"https://api.gen-api.ru/api/v1/request/get/{safe_request_id}"
+    headers = {
+        "Authorization": f"Bearer {AI_API_KEY}",
+        "Accept": "application/json",
+    }
+    deadline = time.monotonic() + AI_TIMEOUT_SECONDS
+    last_data: dict[str, Any] = {"request_id": request_id, "status": "processing"}
+
+    async with ClientSession(timeout=ClientTimeout(total=30)) as session:
+        while time.monotonic() < deadline:
+            await asyncio.sleep(2)
+            async with session.get(result_url, headers=headers) as response:
+                response_text = await response.text()
+                if response.status >= 400:
+                    logging.error(
+                        "GenAPI result API returned %s: %s",
+                        response.status,
+                        response_text[:500],
+                    )
+                    raise RuntimeError(f"GenAPI не смогла выдать результат: ошибка {response.status}")
+                try:
+                    data = json.loads(response_text)
+                except json.JSONDecodeError as error:
+                    logging.error("GenAPI result is not JSON: %s", response_text[:500])
+                    raise RuntimeError("GenAPI вернула неизвестный формат результата") from error
+
+            if not isinstance(data, dict):
+                continue
+            last_data = data
+            status = str(data.get("status") or "").lower()
+            if status in {"failed", "error", "canceled", "cancelled"}:
+                detail = data.get("error") or data.get("message") or status
+                raise RuntimeError(f"GenAPI не завершила генерацию: {detail}")
+            if status == "success":
+                return data
+
+            # Некоторые ответы уже содержат текст до обновления поля status.
+            try:
+                extract_ai_message_content(data)
+                return data
+            except RuntimeError:
+                pass
+
+    logging.error("GenAPI polling timed out. Shape: %s", describe_response_shape(last_data))
+    raise RuntimeError("GenAPI слишком долго генерирует сценарий. Попробуйте ещё раз")
 
 
 def extract_text_from_nested_result(value: Any) -> str:
@@ -421,7 +473,15 @@ async def generate_ai_script(topic: str, duration: str, tone: str) -> list[dict[
         logging.error("AI generation failed: %s", error)
         raise RuntimeError("ИИ сейчас не ответила. Проверьте AI_API_KEY, AI_BASE_URL и AI_MODEL в Render.") from error
 
-    answer = extract_ai_message_content(data)
+    try:
+        answer = extract_ai_message_content(data)
+    except RuntimeError as error:
+        request_id = data.get("request_id") or data.get("id") if isinstance(data, dict) else None
+        if not request_id:
+            raise error
+        logging.info("GenAPI queued request %s; polling for result", request_id)
+        data = await poll_genapi_result(request_id)
+        answer = extract_ai_message_content(data)
 
     try:
         parsed = extract_json_from_ai_answer(answer)
