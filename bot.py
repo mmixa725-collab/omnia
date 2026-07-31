@@ -165,10 +165,10 @@ def extract_json_from_ai_answer(text: str) -> Any:
         raise
 
 
-async def generate_ai_script(topic: str, duration: str, tone: str) -> list[dict[str, str]] | None:
+async def generate_ai_script(topic: str, duration: str, tone: str) -> list[dict[str, str]]:
     """Сгенерировать сценарий через GenAPI/OpenAI-compatible endpoint."""
     if not AI_API_KEY:
-        return None
+        return make_script(topic, duration, tone)
 
     duration_label = "Shorts/Reels на 60 секунд" if duration == "short" else "YouTube-видео на 5-10 минут"
     tone_label = {
@@ -226,32 +226,32 @@ async def generate_ai_script(topic: str, duration: str, tone: str) -> list[dict[
                 response_text = await response.text()
                 if response.status >= 400:
                     logging.error("AI API returned %s: %s", response.status, response_text[:500])
-                    return None
+                    raise RuntimeError(f"GenAPI вернул ошибку {response.status}")
                 data = json.loads(response_text)
     except (ClientError, TimeoutError, json.JSONDecodeError) as error:
         logging.error("AI generation failed: %s", error)
-        return None
+        raise RuntimeError("ИИ сейчас не ответила. Проверьте AI_API_KEY, AI_BASE_URL и AI_MODEL в Render.") from error
 
     message = data.get("choices", [{}])[0].get("message", {})
     answer = str(message.get("content") or "").strip()
     if not answer:
         logging.error("AI response did not contain message content")
-        return None
+        raise RuntimeError("ИИ вернула пустой ответ")
 
     try:
         parsed = extract_json_from_ai_answer(answer)
     except (TypeError, ValueError, json.JSONDecodeError) as error:
         logging.error("AI response is not valid JSON: %s", error)
-        return None
+        raise RuntimeError("ИИ вернула ответ не в JSON-формате") from error
 
     if not isinstance(parsed, list) or len(parsed) < 3:
         logging.error("AI response has invalid scene list")
-        return None
+        raise RuntimeError("ИИ вернула неправильную структуру сценария")
 
     scenes = [normalize_ai_scene(scene, index, duration) for index, scene in enumerate(parsed[:3])]
     if any(not scene["speaker"] or not scene["frame"] for scene in scenes):
         logging.error("AI response has empty required scene fields")
-        return None
+        raise RuntimeError("ИИ вернула неполный сценарий")
     return scenes
 
 
@@ -346,9 +346,10 @@ async def api_generate(request: web.Request) -> web.Response:
             status=402,
         )
 
-    content = await generate_ai_script(topic, duration, tone)
-    if content is None:
-        content = make_script(topic, duration, tone)
+    try:
+        content = await generate_ai_script(topic, duration, tone)
+    except RuntimeError as error:
+        return web.json_response({"error": str(error)}, status=502)
     scenario_id = await asyncio.to_thread(
         database.save_scenario, user["id"], topic, duration, tone, content
     )
@@ -381,6 +382,17 @@ async def api_invoice(request: web.Request) -> web.Response:
 
 async def index_page(_: web.Request) -> web.FileResponse:
     return web.FileResponse(BASE_DIR / "index.html")
+
+
+async def health(_: web.Request) -> web.Response:
+    return web.json_response(
+        {
+            "status": "ok",
+            "ai_enabled": bool(AI_API_KEY),
+            "ai_model": AI_MODEL,
+            "ai_base_url": AI_BASE_URL,
+        }
+    )
 
 
 async def telegram_webhook(request: web.Request) -> web.Response:
@@ -501,7 +513,7 @@ async def run() -> None:
     application.add_routes(
         [
             web.get("/", index_page),
-            web.get("/health", lambda _: web.json_response({"status": "ok"})),
+            web.get("/health", health),
             web.get("/api/profile", api_profile),
             web.get("/api/scenarios", api_scenarios),
             web.post("/api/generate", api_generate),
