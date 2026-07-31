@@ -22,6 +22,7 @@
             --hero: #a78bfa;
             --button-text: #fff;
             --glow: 0 16px 42px rgba(73,87,255,.28);
+            --icon-filter: hue-rotate(178deg) saturate(1.3) brightness(1.05);
             --body-art: radial-gradient(circle at 88% -4%, rgba(100,63,255,.23), transparent 30rem), radial-gradient(circle at -8% 34%, rgba(10,132,255,.12), transparent 25rem);
             --safe-top: max(18px, env(safe-area-inset-top));
             --safe-bottom: max(18px, env(safe-area-inset-bottom));
@@ -30,36 +31,42 @@
             --background:#1b140f; --surface:rgba(255,238,219,.055); --surface-strong:rgba(255,238,219,.1);
             --border:rgba(255,220,184,.13); --text:#fff4e9; --muted:#c7aa91; --accent:#d97745; --accent-2:#f2a56f;
             --accent-soft:rgba(217,119,69,.15); --hero:#f2a56f; --glow:none;
+            --icon-filter:none;
             --body-art:linear-gradient(180deg,rgba(217,119,69,.12),transparent 35%),radial-gradient(circle at 90% 0,rgba(242,165,111,.13),transparent 28rem);
         }
         body[data-theme="mono"] {
             --background:#050505; --surface:rgba(255,255,255,.04); --surface-strong:rgba(255,255,255,.09);
             --border:rgba(255,255,255,.1); --text:#fafafa; --muted:#929292; --accent:#fff; --accent-2:#c9c9c9;
             --accent-soft:rgba(255,255,255,.1); --hero:#dedede; --button-text:#080808; --glow:0 12px 35px rgba(255,255,255,.05);
+            --icon-filter:grayscale(1) brightness(1.2) contrast(1.08);
             --body-art:radial-gradient(circle at 20% 10%,rgba(255,255,255,.06),transparent 24rem);
         }
         body[data-theme="cyber"] {
             --background:#050a0f; --surface:rgba(0,229,255,.055); --surface-strong:rgba(0,229,255,.1);
             --border:rgba(85,255,218,.15); --text:#edfffb; --muted:#83ada6; --accent:#00dfff; --accent-2:#55ffb5;
             --accent-soft:rgba(0,223,255,.14); --hero:#55ffb5; --glow:0 16px 42px rgba(0,223,255,.2);
+            --icon-filter:hue-rotate(142deg) saturate(1.45) brightness(1.08);
             --body-art:radial-gradient(circle at 84% 0,rgba(0,223,255,.18),transparent 27rem),radial-gradient(circle at 0 32%,rgba(85,255,181,.1),transparent 23rem);
         }
         body[data-theme="sunset"] {
             --background:#16090f; --surface:rgba(255,255,255,.055); --surface-strong:rgba(255,255,255,.1);
             --border:rgba(255,183,157,.14); --text:#fff5ef; --muted:#cda496; --accent:#ff5f6d; --accent-2:#ffc371;
             --accent-soft:rgba(255,95,109,.15); --hero:#ffc371; --glow:0 16px 42px rgba(255,95,109,.22);
+            --icon-filter:hue-rotate(342deg) saturate(1.35) brightness(1.06);
             --body-art:radial-gradient(circle at 88% 0,rgba(255,95,109,.22),transparent 28rem),radial-gradient(circle at 4% 30%,rgba(255,195,113,.12),transparent 24rem);
         }
         body[data-theme="forest"] {
             --background:#07110d; --surface:rgba(190,255,213,.05); --surface-strong:rgba(190,255,213,.095);
             --border:rgba(124,242,180,.14); --text:#f1fff6; --muted:#9bc2aa; --accent:#34c759; --accent-2:#7cf2b4;
             --accent-soft:rgba(52,199,89,.15); --hero:#7cf2b4; --glow:0 16px 42px rgba(52,199,89,.18);
+            --icon-filter:hue-rotate(82deg) saturate(1.25) brightness(1.02);
             --body-art:radial-gradient(circle at 84% 0,rgba(52,199,89,.18),transparent 25rem),radial-gradient(circle at 5% 35%,rgba(124,242,180,.1),transparent 22rem);
         }
         body[data-theme="royal"] {
             --background:#0d0b1b; --surface:rgba(235,223,255,.055); --surface-strong:rgba(235,223,255,.1);
             --border:rgba(185,148,255,.15); --text:#faf5ff; --muted:#b19bc9; --accent:#7c4dff; --accent-2:#d46bff;
             --accent-soft:rgba(124,77,255,.16); --hero:#d46bff; --glow:0 16px 42px rgba(124,77,255,.24);
+            --icon-filter:hue-rotate(236deg) saturate(1.35) brightness(1.06);
             --body-art:radial-gradient(circle at 90% 0,rgba(124,77,255,.22),transparent 27rem),radial-gradient(circle at 8% 30%,rgba(212,107,255,.12),transparent 23rem);
         }
         * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
@@ -69,7 +76,8 @@
         .app-shell { width:min(100%,640px); min-height:100dvh; margin:auto; padding:var(--safe-top) 20px calc(122px + var(--safe-bottom)); }
         .topbar { display:flex; align-items:center; justify-content:space-between; margin:4px 0 28px; }
         .brand { display:flex; align-items:center; gap:10px; }
-        .brand-mark { display:grid; width:35px; height:35px; place-items:center; border:1px solid var(--border); border-radius:12px; background:var(--surface-strong); box-shadow:inset 0 1px rgba(255,255,255,.12),var(--glow); font-size:20px; }
+        .brand-mark { display:block; width:38px; height:38px; overflow:hidden; border:1px solid var(--border); border-radius:12px; background:var(--surface-strong); box-shadow:inset 0 1px rgba(255,255,255,.12),var(--glow); transition:filter .35s ease,box-shadow .35s ease; }
+        .brand-mark img { display:block; width:100%; height:100%; object-fit:cover; transform:scale(1.04); filter:var(--icon-filter); transition:filter .35s ease; }
         .brand-name { font-size:19px; font-weight:750; letter-spacing:-.04em; }
         .credit-pill { display:flex; align-items:center; gap:7px; min-height:34px; padding:7px 11px; border:1px solid var(--border); border-radius:999px; background:var(--surface); color:var(--muted); font-size:12px; font-weight:650; backdrop-filter:blur(18px); }
         .credit-dot { width:7px; height:7px; border-radius:50%; background:#34c759; box-shadow:0 0 10px rgba(52,199,89,.75); }
@@ -138,7 +146,7 @@
 <body data-theme="apple">
     <main class="app-shell">
         <header class="topbar">
-            <div class="brand"><div class="brand-mark">∞</div><span class="brand-name">omnia</span></div>
+            <div class="brand"><div class="brand-mark"><img src="/assets/omnia-icon.png" alt="Логотип omnia"></div><span class="brand-name">omnia</span></div>
             <div class="credit-pill"><span class="credit-dot"></span><span id="creditText">Загрузка…</span></div>
         </header>
 

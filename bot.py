@@ -760,6 +760,7 @@ async def run() -> None:
     application.add_routes(
         [
             web.get("/", index_page),
+            web.static("/assets", BASE_DIR / "assets"),
             web.get("/health", health),
             web.get("/api/profile", api_profile),
             web.get("/api/scenarios", api_scenarios),
