@@ -65,6 +65,7 @@ class Database:
                     user_id INTEGER NOT NULL,
                     topic TEXT NOT NULL,
                     duration TEXT NOT NULL,
+                    duration_minutes INTEGER,
                     tone TEXT NOT NULL,
                     content TEXT NOT NULL,
                     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -93,6 +94,10 @@ class Database:
                 connection.execute(
                     "ALTER TABLE scenarios ADD COLUMN is_favorite INTEGER NOT NULL DEFAULT 0 "
                     "CHECK (is_favorite IN (0, 1))"
+                )
+            if "duration_minutes" not in scenario_columns:
+                connection.execute(
+                    "ALTER TABLE scenarios ADD COLUMN duration_minutes INTEGER"
                 )
 
     @staticmethod
@@ -178,14 +183,23 @@ class Database:
         duration: str,
         tone: str,
         content: list[dict[str, str]],
+        duration_minutes: int | None = None,
     ) -> int:
         with self._connect() as connection:
             cursor = connection.execute(
                 """
-                INSERT INTO scenarios (user_id, topic, duration, tone, content)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO scenarios
+                    (user_id, topic, duration, duration_minutes, tone, content)
+                VALUES (?, ?, ?, ?, ?, ?)
                 """,
-                (user_id, topic, duration, tone, json.dumps(content, ensure_ascii=False)),
+                (
+                    user_id,
+                    topic,
+                    duration,
+                    duration_minutes,
+                    tone,
+                    json.dumps(content, ensure_ascii=False),
+                ),
             )
             return int(cursor.lastrowid)
 
@@ -193,7 +207,7 @@ class Database:
         with self._connect() as connection:
             rows = connection.execute(
                 """
-                SELECT id, topic, duration, tone, content, is_favorite, created_at
+                SELECT id, topic, duration, duration_minutes, tone, content, is_favorite, created_at
                 FROM scenarios
                 WHERE user_id = ?
                 ORDER BY id DESC
@@ -206,6 +220,7 @@ class Database:
                 "id": row["id"],
                 "topic": row["topic"],
                 "duration": row["duration"],
+                "duration_minutes": row["duration_minutes"],
                 "tone": row["tone"],
                 "content": json.loads(row["content"]),
                 "is_favorite": bool(row["is_favorite"]),
@@ -218,7 +233,7 @@ class Database:
         with self._connect() as connection:
             row = connection.execute(
                 """
-                SELECT id, topic, duration, tone, content, is_favorite, created_at
+                SELECT id, topic, duration, duration_minutes, tone, content, is_favorite, created_at
                 FROM scenarios WHERE id = ? AND user_id = ?
                 """,
                 (scenario_id, user_id),
@@ -229,6 +244,7 @@ class Database:
             "id": row["id"],
             "topic": row["topic"],
             "duration": row["duration"],
+            "duration_minutes": row["duration_minutes"],
             "tone": row["tone"],
             "content": json.loads(row["content"]),
             "is_favorite": bool(row["is_favorite"]),
@@ -358,6 +374,7 @@ class PostgresDatabase:
                 user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
                 topic TEXT NOT NULL,
                 duration TEXT NOT NULL,
+                duration_minutes INTEGER,
                 tone TEXT NOT NULL,
                 content JSONB NOT NULL,
                 is_favorite INTEGER NOT NULL DEFAULT 0 CHECK (is_favorite IN (0, 1)),
@@ -376,6 +393,7 @@ class PostgresDatabase:
             """,
             "CREATE INDEX IF NOT EXISTS scenarios_user_created_index ON scenarios(user_id, created_at DESC)",
             "ALTER TABLE scenarios ADD COLUMN IF NOT EXISTS is_favorite INTEGER NOT NULL DEFAULT 0 CHECK (is_favorite IN (0, 1))",
+            "ALTER TABLE scenarios ADD COLUMN IF NOT EXISTS duration_minutes INTEGER",
         )
         with self._connect() as connection:
             with connection.cursor() as cursor:
@@ -438,16 +456,25 @@ class PostgresDatabase:
         duration: str,
         tone: str,
         content: list[dict[str, str]],
+        duration_minutes: int | None = None,
     ) -> int:
         with self._connect() as connection:
             with connection.cursor() as cursor:
                 cursor.execute(
                     """
-                    INSERT INTO scenarios (user_id, topic, duration, tone, content)
-                    VALUES (%s, %s, %s, %s, %s::jsonb)
+                    INSERT INTO scenarios
+                        (user_id, topic, duration, duration_minutes, tone, content)
+                    VALUES (%s, %s, %s, %s, %s, %s::jsonb)
                     RETURNING id
                     """,
-                    (user_id, topic, duration, tone, json.dumps(content, ensure_ascii=False)),
+                    (
+                        user_id,
+                        topic,
+                        duration,
+                        duration_minutes,
+                        tone,
+                        json.dumps(content, ensure_ascii=False),
+                    ),
                 )
                 row = cursor.fetchone()
                 return int(row["id"])
@@ -457,7 +484,7 @@ class PostgresDatabase:
             with connection.cursor() as cursor:
                 cursor.execute(
                     """
-                    SELECT id, topic, duration, tone, content, is_favorite, created_at
+                    SELECT id, topic, duration, duration_minutes, tone, content, is_favorite, created_at
                     FROM scenarios WHERE user_id = %s
                     ORDER BY id DESC LIMIT %s
                     """,
@@ -469,6 +496,7 @@ class PostgresDatabase:
                 "id": row["id"],
                 "topic": row["topic"],
                 "duration": row["duration"],
+                "duration_minutes": row["duration_minutes"],
                 "tone": row["tone"],
                 "content": row["content"],
                 "is_favorite": bool(row["is_favorite"]),
@@ -482,7 +510,7 @@ class PostgresDatabase:
             with connection.cursor() as cursor:
                 cursor.execute(
                     """
-                    SELECT id, topic, duration, tone, content, is_favorite, created_at
+                    SELECT id, topic, duration, duration_minutes, tone, content, is_favorite, created_at
                     FROM scenarios WHERE id = %s AND user_id = %s
                     """,
                     (scenario_id, user_id),
@@ -494,6 +522,7 @@ class PostgresDatabase:
             "id": row["id"],
             "topic": row["topic"],
             "duration": row["duration"],
+            "duration_minutes": row["duration_minutes"],
             "tone": row["tone"],
             "content": row["content"],
             "is_favorite": bool(row["is_favorite"]),

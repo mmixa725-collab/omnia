@@ -158,7 +158,10 @@ def extract_ai_message_content(data: Any) -> str:
     raise RuntimeError("ИИ вернула ответ без текста сценария")
 
 
-async def poll_genapi_result(request_id: Any) -> dict[str, Any]:
+async def poll_genapi_result(
+    request_id: Any,
+    timeout_seconds: float | None = None,
+) -> dict[str, Any]:
     """Дождаться результата GenAPI, если первый ответ содержит только request_id."""
     safe_request_id = quote(str(request_id), safe="")
     result_url = f"https://api.gen-api.ru/api/v1/request/get/{safe_request_id}"
@@ -166,7 +169,7 @@ async def poll_genapi_result(request_id: Any) -> dict[str, Any]:
         "Authorization": f"Bearer {AI_API_KEY}",
         "Accept": "application/json",
     }
-    deadline = time.monotonic() + AI_TIMEOUT_SECONDS
+    deadline = time.monotonic() + (timeout_seconds or AI_TIMEOUT_SECONDS)
     last_data: dict[str, Any] = {"request_id": request_id, "status": "processing"}
 
     async with ClientSession(timeout=ClientTimeout(total=30)) as session:
@@ -345,16 +348,54 @@ def ensure_premium_access(user_id: int, username: str | None) -> dict[str, Any]:
     return profile
 
 
-def normalize_ai_scene(scene: dict[str, Any], index: int, duration: str) -> dict[str, str]:
-    """Привести ответ модели к формату, который уже умеет рисовать фронтенд."""
-    short_timings = ["00:00-00:04", "00:05-00:42", "00:43-01:00"]
-    long_timings = ["00:00-00:25", "00:26-06:30", "06:31-08:00"]
-    timings = short_timings if duration == "short" else long_timings
-    fallback_titles = ["Хук", "Польза", "Финал"]
+def format_video_time(total_seconds: int) -> str:
+    """Форматировать время ролика без случайного округления."""
+    minutes, seconds = divmod(max(0, total_seconds), 60)
+    return f"{minutes:02d}:{seconds:02d}"
+
+
+def video_scene_count(duration: str, duration_minutes: int | None) -> int:
+    if duration == "short":
+        return 3
+    minutes = max(1, min(60, duration_minutes or 10))
+    return max(3, min(12, (minutes + 4) // 5 + 2))
+
+
+def exact_video_timings(
+    duration: str,
+    scene_count: int,
+    duration_minutes: int | None,
+) -> list[str]:
+    if duration == "short":
+        return ["00:00–00:04", "00:04–00:43", "00:43–01:00"]
+    total_seconds = max(1, min(60, duration_minutes or 10)) * 60
+    return [
+        f"{format_video_time(total_seconds * index // scene_count)}–"
+        f"{format_video_time(total_seconds * (index + 1) // scene_count)}"
+        for index in range(scene_count)
+    ]
+
+
+def normalize_ai_scene(
+    scene: dict[str, Any],
+    index: int,
+    duration: str,
+    duration_minutes: int | None,
+    scene_count: int,
+) -> dict[str, str]:
+    """Привести ответ модели к формату фронтенда и зафиксировать тайминг."""
+    timings = exact_video_timings(duration, scene_count, duration_minutes)
+    fallback_titles = ["Хук", "Развитие", "Финал"]
+    fallback_title = (
+        fallback_titles[index]
+        if scene_count == 3 and index < len(fallback_titles)
+        else f"Смысловой блок {index + 1}"
+    )
+    generated_timing = str(scene.get("timing") or timings[index]).strip()[:40]
 
     return {
-        "title": str(scene.get("title") or fallback_titles[index]).strip()[:80],
-        "timing": str(scene.get("timing") or timings[index]).strip()[:40],
+        "title": str(scene.get("title") or fallback_title).strip()[:80],
+        "timing": timings[index] if duration == "long" else generated_timing,
         "frame": str(scene.get("frame") or "").strip(),
         "speaker": str(scene.get("speaker") or "").strip(),
         "light": str(scene.get("light") or "").strip(),
@@ -393,15 +434,22 @@ async def generate_ai_script(
     topic: str,
     duration: str,
     tone: str,
+    duration_minutes: int | None = None,
     options: dict[str, str] | None = None,
     existing_content: list[dict[str, str]] | None = None,
     revision_instruction: str = "",
 ) -> list[dict[str, str]]:
     """Сгенерировать сценарий через GenAPI/OpenAI-compatible endpoint."""
     if not AI_API_KEY:
-        return make_script(topic, duration, tone)
+        return make_script(topic, duration, tone, duration_minutes)
 
-    duration_label = "Shorts/Reels на 60 секунд" if duration == "short" else "YouTube-видео на 5-10 минут"
+    exact_minutes = max(1, min(60, duration_minutes or 10))
+    scene_count = video_scene_count(duration, exact_minutes)
+    duration_label = (
+        "Shorts/Reels ровно на 60 секунд"
+        if duration == "short"
+        else f"YouTube-видео ровно на {exact_minutes} минут"
+    )
     tone_label = {
         "hype": "динамичный хайп, быстро, энергично, без воды",
         "emotional": "эмоциональный, искренний, мотивирующий",
@@ -447,7 +495,10 @@ async def generate_ai_script(
 - Никакой воды вроде "главная деталь темы" или "три опоры".
 - Дай реальные действия, упражнения, ошибки, примеры и визуальные кадры.
 - Текст спикера должен звучать как живой человек из Reels/TikTok.
-- Верни ровно JSON-массив из 3 блоков.
+- Верни ровно JSON-массив из {scene_count} смысловых блоков.
+- Тайминг должен непрерывно покрывать всю заданную длительность без пропусков.
+- Для YouTube рассчитывай объём речи примерно по 70-90 слов в минуту: учитывай паузы, демонстрации и B-roll.
+- Последний блок обязан заканчиваться точно на отметке {"01:00" if duration == "short" else format_video_time(exact_minutes * 60)}.
 
 Схема каждого блока:
 {{
@@ -468,10 +519,19 @@ async def generate_ai_script(
             {"role": "user", "content": user_prompt},
         ],
         "temperature": 0.85,
-        "max_tokens": 1800 if duration == "short" else 3200,
+        "max_tokens": (
+            1800
+            if duration == "short"
+            else min(8000, 2200 + exact_minutes * 95)
+        ),
     }
 
-    timeout = ClientTimeout(total=AI_TIMEOUT_SECONDS)
+    generation_timeout = (
+        AI_TIMEOUT_SECONDS
+        if duration == "short"
+        else max(AI_TIMEOUT_SECONDS, 70 + exact_minutes * 2)
+    )
+    timeout = ClientTimeout(total=generation_timeout)
     headers = {
         "Authorization": f"Bearer {AI_API_KEY}",
         "Content-Type": "application/json",
@@ -514,7 +574,7 @@ async def generate_ai_script(
         if not request_id:
             raise error
         logging.info("GenAPI queued request %s; polling for result", request_id)
-        data = await poll_genapi_result(request_id)
+        data = await poll_genapi_result(request_id, generation_timeout)
         answer = extract_ai_message_content(data)
 
     try:
@@ -527,20 +587,38 @@ async def generate_ai_script(
         logging.error("AI response has invalid scene list")
         raise RuntimeError("ИИ вернула неправильную структуру сценария")
 
-    scenes = [normalize_ai_scene(scene, index, duration) for index, scene in enumerate(parsed[:3])]
+    available_count = min(scene_count, len(parsed))
+    scenes = [
+        normalize_ai_scene(
+            scene,
+            index,
+            duration,
+            exact_minutes,
+            available_count,
+        )
+        for index, scene in enumerate(parsed[:available_count])
+    ]
     if any(not scene["speaker"] or not scene["frame"] for scene in scenes):
         logging.error("AI response has empty required scene fields")
         raise RuntimeError("ИИ вернула неполный сценарий")
     return scenes
 
 
-def make_script(topic: str, duration: str, tone: str) -> list[dict[str, str]]:
+def make_script(
+    topic: str,
+    duration: str,
+    tone: str,
+    duration_minutes: int | None = None,
+) -> list[dict[str, str]]:
     """Сформировать готовый структурированный сценарий без внешнего API."""
     is_short = duration == "short"
-    duration_label = "60 секунд" if is_short else "5–10 минут"
-    opening_timing = "00:00–00:04" if is_short else "00:00–00:25"
-    body_timing = "00:05–00:42" if is_short else "00:26–06:30"
-    finale_timing = "00:43–01:00" if is_short else "06:31–08:00"
+    exact_minutes = max(1, min(60, duration_minutes or 10))
+    duration_label = "60 секунд" if is_short else f"{exact_minutes} минут"
+    opening_timing, body_timing, finale_timing = exact_video_timings(
+        duration,
+        3,
+        exact_minutes,
+    )
 
     tone_copy = {
         "hype": "говорим быстро, уверенно и с нарастающей энергией",
@@ -676,6 +754,7 @@ async def api_refine_scenario(request: web.Request) -> web.Response:
             scenario["topic"],
             scenario["duration"],
             requested_tone,
+            duration_minutes=scenario.get("duration_minutes"),
             existing_content=scenario["content"],
             revision_instruction=instructions[action],
         )
@@ -701,6 +780,10 @@ async def api_generate(request: web.Request) -> web.Response:
     topic = str(body.get("topic", "")).strip()
     duration = str(body.get("duration", ""))
     tone = str(body.get("tone", ""))
+    try:
+        duration_minutes = int(body.get("duration_minutes", 10))
+    except (TypeError, ValueError):
+        duration_minutes = 10
     raw_options = body.get("options") if isinstance(body.get("options"), dict) else {}
     options = {
         key: str(raw_options.get(key, "")).strip()[:180]
@@ -717,6 +800,13 @@ async def api_generate(request: web.Request) -> web.Response:
         "educational",
     }:
         return web.json_response({"error": "Проверьте параметры сценария"}, status=400)
+    if duration == "long" and not 1 <= duration_minutes <= 60:
+        return web.json_response(
+            {"error": "Длительность YouTube-видео должна быть от 1 до 60 минут"},
+            status=400,
+        )
+    if duration == "short":
+        duration_minutes = None
 
     await asyncio.to_thread(
         ensure_premium_access,
@@ -731,11 +821,23 @@ async def api_generate(request: web.Request) -> web.Response:
         )
 
     try:
-        content = await generate_ai_script(topic, duration, tone, options=options)
+        content = await generate_ai_script(
+            topic,
+            duration,
+            tone,
+            duration_minutes=duration_minutes,
+            options=options,
+        )
     except RuntimeError as error:
         return web.json_response({"error": str(error)}, status=502)
     scenario_id = await asyncio.to_thread(
-        database.save_scenario, user["id"], topic, duration, tone, content
+        database.save_scenario,
+        user["id"],
+        topic,
+        duration,
+        tone,
+        content,
+        duration_minutes,
     )
     return web.json_response(
         {
@@ -743,6 +845,7 @@ async def api_generate(request: web.Request) -> web.Response:
                 "id": scenario_id,
                 "topic": topic,
                 "duration": duration,
+                "duration_minutes": duration_minutes,
                 "tone": tone,
                 "content": content,
                 "is_favorite": False,
