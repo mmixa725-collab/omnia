@@ -282,7 +282,6 @@ async def generate_ai_script(topic: str, duration: str, tone: str) -> list[dict[
 """.strip()
 
     payload = {
-        "callback_url": None,
         "is_sync": True,
         "model": ai_model_name(),
         "messages": [
@@ -291,7 +290,6 @@ async def generate_ai_script(topic: str, duration: str, tone: str) -> list[dict[
         ],
         "temperature": 0.85,
         "max_tokens": 1800 if duration == "short" else 3200,
-        "response_format": {"type": "json_object"},
     }
 
     timeout = ClientTimeout(total=AI_TIMEOUT_SECONDS)
@@ -309,12 +307,17 @@ async def generate_ai_script(topic: str, duration: str, tone: str) -> list[dict[
                     detail = response_text[:240]
                     try:
                         error_payload = json.loads(response_text)
-                        detail = str(
-                            error_payload.get("message")
+                        raw_detail = (
+                            error_payload.get("errors")
                             or error_payload.get("detail")
                             or error_payload.get("error")
+                            or error_payload.get("message")
                             or error_payload
-                        )[:240]
+                        )
+                        if isinstance(raw_detail, (dict, list)):
+                            detail = json.dumps(raw_detail, ensure_ascii=False)[:240]
+                        else:
+                            detail = str(raw_detail)[:240]
                     except json.JSONDecodeError:
                         pass
                     raise RuntimeError(f"GenAPI вернул ошибку {response.status}: {detail}")
