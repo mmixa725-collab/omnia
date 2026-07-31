@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qsl
 
-from aiohttp import web
+from aiohttp import ClientError, ClientSession, ClientTimeout, web
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.exceptions import TelegramNetworkError
@@ -49,6 +49,10 @@ DEVELOPMENT_MODE = os.getenv("DEVELOPMENT_MODE", "false").lower() == "true"
 TELEGRAM_PROXY = os.getenv("TELEGRAM_PROXY", "").strip()
 WEBHOOK_MODE = os.getenv("WEBHOOK_MODE", "false").lower() == "true"
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
+AI_API_KEY = os.getenv("AI_API_KEY", "").strip()
+AI_BASE_URL = os.getenv("AI_BASE_URL", "https://proxy.gen-api.ru/v1").strip().rstrip("/")
+AI_MODEL = os.getenv("AI_MODEL", "deepseek-v4-flash").strip()
+AI_TIMEOUT_SECONDS = float(os.getenv("AI_TIMEOUT_SECONDS", "55"))
 
 PRICE_STARS = 300
 PAYLOAD_PREFIX = "omnia-premium"
@@ -125,6 +129,130 @@ async def authentication_middleware(
 
 def current_user(request: web.Request) -> dict[str, Any]:
     return request["telegram_user"]
+
+
+def normalize_ai_scene(scene: dict[str, Any], index: int, duration: str) -> dict[str, str]:
+    """Привести ответ модели к формату, который уже умеет рисовать фронтенд."""
+    short_timings = ["00:00-00:04", "00:05-00:42", "00:43-01:00"]
+    long_timings = ["00:00-00:25", "00:26-06:30", "06:31-08:00"]
+    timings = short_timings if duration == "short" else long_timings
+    fallback_titles = ["Хук", "Польза", "Финал"]
+
+    return {
+        "title": str(scene.get("title") or fallback_titles[index]).strip()[:80],
+        "timing": str(scene.get("timing") or timings[index]).strip()[:40],
+        "frame": str(scene.get("frame") or "").strip(),
+        "speaker": str(scene.get("speaker") or "").strip(),
+        "light": str(scene.get("light") or "").strip(),
+        "sound": str(scene.get("sound") or "").strip(),
+    }
+
+
+def extract_json_from_ai_answer(text: str) -> Any:
+    """Достать JSON даже если модель обернула его в markdown-блок."""
+    cleaned = text.strip()
+    if cleaned.startswith("```"):
+        cleaned = cleaned.removeprefix("```json").removeprefix("```").strip()
+        cleaned = cleaned.removesuffix("```").strip()
+
+    try:
+        return json.loads(cleaned)
+    except json.JSONDecodeError:
+        start = cleaned.find("[")
+        end = cleaned.rfind("]")
+        if start != -1 and end != -1 and end > start:
+            return json.loads(cleaned[start : end + 1])
+        raise
+
+
+async def generate_ai_script(topic: str, duration: str, tone: str) -> list[dict[str, str]] | None:
+    """Сгенерировать сценарий через GenAPI/OpenAI-compatible endpoint."""
+    if not AI_API_KEY:
+        return None
+
+    duration_label = "Shorts/Reels на 60 секунд" if duration == "short" else "YouTube-видео на 5-10 минут"
+    tone_label = {
+        "hype": "динамичный хайп, быстро, энергично, без воды",
+        "emotional": "эмоциональный, искренний, мотивирующий",
+        "educational": "обучающий, практичный, пошаговый",
+    }[tone]
+
+    system_prompt = (
+        "Ты сильный русскоязычный сценарист коротких видео и режиссер монтажа. "
+        "Пиши конкретно, применимо и без общих фраз. "
+        "Не объясняй формат, верни только валидный JSON."
+    )
+    user_prompt = f"""
+Сделай сценарий для темы: {topic}
+Формат: {duration_label}
+Тональность: {tone_label}
+
+Важно:
+- Никакой воды вроде "главная деталь темы" или "три опоры".
+- Дай реальные действия, упражнения, ошибки, примеры и визуальные кадры.
+- Текст спикера должен звучать как живой человек из Reels/TikTok.
+- Верни ровно JSON-массив из 3 блоков.
+
+Схема каждого блока:
+{{
+  "title": "название блока",
+  "timing": "тайминг",
+  "frame": "что происходит в кадре",
+  "speaker": "что говорить спикеру",
+  "light": "световая атмосфера",
+  "sound": "звуки и эффекты"
+}}
+""".strip()
+
+    payload = {
+        "model": AI_MODEL,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        "temperature": 0.85,
+        "max_tokens": 1800 if duration == "short" else 3200,
+    }
+
+    timeout = ClientTimeout(total=AI_TIMEOUT_SECONDS)
+    headers = {
+        "Authorization": f"Bearer {AI_API_KEY}",
+        "Content-Type": "application/json",
+    }
+
+    try:
+        async with ClientSession(timeout=timeout) as session:
+            async with session.post(AI_BASE_URL, headers=headers, json=payload) as response:
+                response_text = await response.text()
+                if response.status >= 400:
+                    logging.error("AI API returned %s: %s", response.status, response_text[:500])
+                    return None
+                data = json.loads(response_text)
+    except (ClientError, TimeoutError, json.JSONDecodeError) as error:
+        logging.error("AI generation failed: %s", error)
+        return None
+
+    message = data.get("choices", [{}])[0].get("message", {})
+    answer = str(message.get("content") or "").strip()
+    if not answer:
+        logging.error("AI response did not contain message content")
+        return None
+
+    try:
+        parsed = extract_json_from_ai_answer(answer)
+    except (TypeError, ValueError, json.JSONDecodeError) as error:
+        logging.error("AI response is not valid JSON: %s", error)
+        return None
+
+    if not isinstance(parsed, list) or len(parsed) < 3:
+        logging.error("AI response has invalid scene list")
+        return None
+
+    scenes = [normalize_ai_scene(scene, index, duration) for index, scene in enumerate(parsed[:3])]
+    if any(not scene["speaker"] or not scene["frame"] for scene in scenes):
+        logging.error("AI response has empty required scene fields")
+        return None
+    return scenes
 
 
 def make_script(topic: str, duration: str, tone: str) -> list[dict[str, str]]:
@@ -218,7 +346,9 @@ async def api_generate(request: web.Request) -> web.Response:
             status=402,
         )
 
-    content = make_script(topic, duration, tone)
+    content = await generate_ai_script(topic, duration, tone)
+    if content is None:
+        content = make_script(topic, duration, tone)
     scenario_id = await asyncio.to_thread(
         database.save_scenario, user["id"], topic, duration, tone, content
     )

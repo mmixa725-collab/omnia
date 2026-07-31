@@ -19,3 +19,9 @@ services:
         generateValue: true
       - key: DEVELOPMENT_MODE
         value: "false"
+      - key: AI_API_KEY
+        sync: false
+      - key: AI_BASE_URL
+        value: "https://proxy.gen-api.ru/v1"
+      - key: AI_MODEL
+        value: "deepseek-v4-flash"
